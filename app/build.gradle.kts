@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
@@ -41,13 +40,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
-    kotlinOptions {
-        jvmTarget = "21"
-        freeCompilerArgs = freeCompilerArgs + listOf(
-            "-opt-in=kotlin.RequiresOptIn"
-        )
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
@@ -79,7 +71,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons)
 
-    // LibXposed API 102
+    // LibXposed API 102 & Xposed API 82
+    compileOnly(libs.xposed)
     compileOnly(libs.libxposed.api)
     implementation(libs.libxposed.service)
 
