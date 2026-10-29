@@ -47,6 +47,7 @@ android {
 
     packaging {
         resources {
+            merges += "META-INF/xposed/*"
             excludes += listOf(
                 "/META-INF/{AL2.0,LGPL2.1}",
                 "/META-INF/INDEX.LIST",

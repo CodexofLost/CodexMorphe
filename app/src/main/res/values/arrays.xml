@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="xposed_scope">
+        <item>com.google.android.youtube</item>
+        <item>com.google.android.apps.youtube.music</item>
+        <item>com.reddit.frontpage</item>
+        <item>com.instagram.android</item>
+        <item>com.instagram.barcelona</item>
+        <item>com.strava</item>
+        <item>com.alltrails.alltrails</item>
+        <item>com.google.android.apps.photos</item>
+        <item>com.microblink.photomath</item>
+    </string-array>
+</resources>
