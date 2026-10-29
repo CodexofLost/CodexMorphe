@@ -100,6 +100,9 @@ class BundleDownloader(private val context: Context) {
                 // Clean up any older bundles for this package
                 cleanSupersededBundles(packageName, currentAsset = assetName)
 
+                // Sync to LSPosed framework remote file store
+                syncToRemoteStore(assetName, destinationFile)
+
                 Log.i(TAG, "Successfully downloaded & verified: ${destinationFile.absolutePath}")
                 emit(DownloadState.Success(destinationFile))
             }
@@ -109,6 +112,37 @@ class BundleDownloader(private val context: Context) {
             emit(DownloadState.Error(t.message ?: "Download failed"))
         }
     }.flowOn(Dispatchers.IO)
+
+    private fun syncToRemoteStore(assetName: String, localFile: File) {
+        // 1. Try LSPosed XposedService.openRemoteFile if bound
+        val service = io.github.codexoflost.codexmorphe.CodexMorpheApp.mService
+        if (service != null) {
+            runCatching {
+                service.openRemoteFile(assetName)?.use { pfd ->
+                    java.io.FileOutputStream(pfd.fileDescriptor).use { outStream ->
+                        localFile.inputStream().use { inStream ->
+                            inStream.copyTo(outStream)
+                        }
+                    }
+                    Log.i(TAG, "Synced bundle $assetName via XposedService.openRemoteFile")
+                    return
+                }
+            }.onFailure { Log.w(TAG, "Failed syncing via XposedService: ${it.message}") }
+        }
+
+        // 2. Direct privileged bridge fallback (Shizuku / su)
+        runCatching {
+            val cmd = arrayOf(
+                "su", "-c",
+                "mkdir -p /data/adb/lspd/modules/0/io.github.codexoflost.codexmorphe/files && " +
+                "cp '${localFile.absolutePath}' '/data/adb/lspd/modules/0/io.github.codexoflost.codexmorphe/files/$assetName' && " +
+                "chcon -R u:object_r:lsposed_file:s0 /data/adb/lspd/modules/0/io.github.codexoflost.codexmorphe && " +
+                "chmod -R 755 /data/adb/lspd/modules/0/io.github.codexoflost.codexmorphe"
+            )
+            Runtime.getRuntime().exec(cmd).waitFor()
+            Log.i(TAG, "Synced bundle $assetName via privileged bridge")
+        }
+    }
 
     private fun cleanSupersededBundles(packageName: String, currentAsset: String) {
         runCatching {

@@ -41,6 +41,12 @@ class MainHook : XposedModule() {
         // 2. Open remote bundle via LibXposed API 102 ParcelFileDescriptor streaming
         val pfd = runCatching {
             openRemoteFile(bundleName)
+        }.getOrNull() ?: runCatching {
+            // Direct file descriptor fallback if openRemoteFile IPC encounters framework glitch
+            val directFile = java.io.File("/data/adb/lspd/modules/0/io.github.codexoflost.codexmorphe/files/$bundleName")
+            if (directFile.exists() && directFile.canRead()) {
+                android.os.ParcelFileDescriptor.open(directFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+            } else null
         }.getOrNull()
 
         if (pfd == null) {
