@@ -122,7 +122,10 @@ object ExtensionClassLoading {
                     }
                     fragment
                 } catch (e: Throwable) {
-                    throw Fragment.InstantiationException("Unable to instantiate fragment $className", e)
+                    throw Fragment.InstantiationException(
+                        "Unable to instantiate fragment $className",
+                        e as? Exception ?: Exception(e)
+                    )
                 }
             }
         }

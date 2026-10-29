@@ -1,7 +1,7 @@
 package io.github.codexoflost.codexmorphe.hook
 
 import io.github.libxposed.api.XposedInterface
-import java.lang.reflect.Member
+import java.lang.reflect.Executable
 
 /**
  * Idiomatic Kotlin DSL extensions for modern LibXposed API 102.
@@ -10,44 +10,46 @@ class HookDsl(val chain: XposedInterface.Chain) {
     val thisObject: Any?
         inline get() = chain.thisObject
 
-    val args: Array<Any?>
+    val args: List<Any?>
         inline get() = chain.args
+
+    inline fun <reified T> arg(index: Int): T = chain.getArg(index) as T
 }
 
 /**
- * Hooks a method/constructor before execution.
+ * Hooks an Executable (Method or Constructor) before execution.
  */
 fun XposedInterface.hookBefore(
-    member: Member,
+    executable: Executable,
     block: (HookDsl) -> Unit
 ): XposedInterface.HookHandle {
-    return hook(member).intercept { chain ->
+    return hook(executable).intercept { chain ->
         block(HookDsl(chain))
         chain.proceed()
     }
 }
 
 /**
- * Hooks a method/constructor after execution, allowing result inspection or transformation.
+ * Hooks an Executable (Method or Constructor) after execution, allowing result inspection or transformation.
  */
 fun XposedInterface.hookAfter(
-    member: Member,
+    executable: Executable,
     block: (HookDsl, Any?) -> Any?
 ): XposedInterface.HookHandle {
-    return hook(member).intercept { chain ->
+    return hook(executable).intercept { chain ->
         val result = chain.proceed()
         block(HookDsl(chain), result)
     }
 }
 
 /**
- * Completely replaces a method/constructor with custom logic without calling original.
+ * Completely replaces an Executable (Method or Constructor) with custom logic without calling original.
  */
 fun XposedInterface.hookReplace(
-    member: Member,
+    executable: Executable,
     block: (HookDsl) -> Any?
 ): XposedInterface.HookHandle {
-    return hook(member).intercept { chain ->
+    return hook(executable).intercept { chain ->
         block(HookDsl(chain))
     }
 }
