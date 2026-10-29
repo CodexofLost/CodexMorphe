@@ -71,8 +71,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons)
 
-    // LibXposed API 102 & Xposed API 82
-    compileOnly(libs.xposed)
+    // LibXposed API 102
     compileOnly(libs.libxposed.api)
     implementation(libs.libxposed.service)
 

@@ -2,7 +2,6 @@ package io.github.codexoflost.codexmorphe.hook
 
 import android.app.Application
 import android.util.Log
-import de.robv.android.xposed.XposedHelpers
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface
 
@@ -19,42 +18,30 @@ class MainHook : XposedModule() {
 
     override fun onModuleLoaded(param: XposedModuleInterface.ModuleLoadedParam) {
         modulePath = moduleApplicationInfo.sourceDir
-        Log.i(TAG, "CodexMorphe module loaded from $modulePath")
+        Log.i(TAG, "CodexMorphe module loaded for process ${param.processName} from $modulePath (API $apiVersion)")
     }
 
     override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
+        val packageName = param.packageName
+        Log.d(TAG, "onPackageReady: $packageName, isFirstPackage: ${param.isFirstPackage}")
+
         if (!param.isFirstPackage) return
 
-        val packageName = param.packageName
-        Log.d(TAG, "Target package ready: $packageName")
-
-        // 1. Read LSPosed Remote Preferences for this package
+        // 1. Query remote preferences for active author
         val prefs = runCatching {
             getRemotePreferences(packageName)
-        }.getOrNull() ?: runCatching {
-            getRemotePreferences("prefs")
+        }.getOrNull() ?: run {
+            Log.w(TAG, "Unable to load remote preferences for $packageName")
+            return
+        }
+
+        val activeAuthor = prefs.getString("active_author", "official") ?: "official"
+        val bundleName = "$packageName-$activeAuthor-bundle.apk"
+
+        // 2. Open remote bundle via LibXposed API 102 ParcelFileDescriptor streaming
+        val pfd = runCatching {
+            openRemoteFile(bundleName)
         }.getOrNull()
-
-        if (prefs == null) {
-            Log.w(TAG, "Could not resolve remote preferences for $packageName")
-            return
-        }
-
-        val isAppEnabled = prefs.getBoolean("app_enabled_$packageName", true)
-        if (!isAppEnabled) {
-            Log.d(TAG, "App $packageName is disabled in CodexMorphe preferences; skipping hook.")
-            return
-        }
-
-        val author = prefs.getString("provider_$packageName", "official") ?: "official"
-        val bundleName = "$packageName-$author-bundle.apk"
-
-        // 2. Request Bundle File Descriptor from Module Storage via IPC
-        var pfd = runCatching { openRemoteFile(bundleName) }.getOrNull()
-        if (pfd == null) {
-            // Fallback to legacy unflavored name if present
-            pfd = runCatching { openRemoteFile("$packageName-bundle.apk") }.getOrNull()
-        }
 
         if (pfd == null) {
             Log.d(TAG, "No bundle APK installed for $packageName ($bundleName); skipping hook.")
@@ -66,37 +53,42 @@ class MainHook : XposedModule() {
         // 3. Hook Application.onCreate to attach context & inject bundle
         val appClassName = param.applicationInfo.className ?: "android.app.Application"
         val appClass = runCatching {
-            XposedHelpers.findClass(appClassName, param.classLoader)
+            Class.forName(appClassName, false, param.classLoader)
         }.getOrElse {
             Application::class.java
         }
 
-        runCatching {
-            val onCreateMethod = appClass.getMethod("onCreate")
-            onCreateMethod.hookBefore { hookParam ->
-                val app = hookParam.thisObject as? Application ?: return@hookBefore
-                Log.d(TAG, "Target Application.onCreate reached for $packageName")
+        val onCreateMethod = runCatching {
+            appClass.getMethod("onCreate")
+        }.getOrNull()
 
-                try {
-                    // Inject resources
-                    BundleResourceInjector.inject(pfd, app)
+        if (onCreateMethod != null) {
+            hook(onCreateMethod).intercept { chain ->
+                val app = chain.thisObject as? Application
+                if (app != null) {
+                    Log.d(TAG, "Target Application.onCreate reached for $packageName")
+                    try {
+                        // Inject resources
+                        BundleResourceInjector.inject(pfd, app)
 
-                    // Load MultiDex classes directly into ART memory
-                    val bundleLoader = BundleClassLoader.create(pfd, param.classLoader)
+                        // Load MultiDex classes directly into ART memory
+                        val bundleLoader = BundleClassLoader.create(pfd, param.classLoader)
 
-                    // Hook UI framework inflation for Morphe views/drawables
-                    ExtensionClassLoading.hook(bundleLoader)
+                        // Hook UI framework inflation for Morphe views/drawables
+                        ExtensionClassLoading.hook(this@MainHook, bundleLoader)
 
-                    // Dispatch DexKit hooks
-                    DexKitHookDispatcher(app, param.classLoader, bundleLoader, prefs).dispatch()
+                        // Dispatch DexKit hooks
+                        DexKitHookDispatcher(app, param.classLoader, bundleLoader, prefs).dispatch()
 
-                    Log.i(TAG, "Successfully injected CodexMorphe into $packageName")
-                } catch (t: Throwable) {
-                    Log.e(TAG, "Error injecting CodexMorphe bundle into $packageName", t)
+                        Log.i(TAG, "Successfully injected CodexMorphe into $packageName")
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Error injecting CodexMorphe bundle into $packageName", t)
+                    }
                 }
+                chain.proceed()
             }
-        }.onFailure { t ->
-            Log.e(TAG, "Failed to hook Application.onCreate for $packageName", t)
+        } else {
+            Log.e(TAG, "Could not find onCreate on $appClass for $packageName")
         }
     }
 }

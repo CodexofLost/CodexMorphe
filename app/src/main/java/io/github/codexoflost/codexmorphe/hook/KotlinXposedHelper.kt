@@ -1,51 +1,53 @@
 package io.github.codexoflost.codexmorphe.hook
 
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
 import java.lang.reflect.Member
 
-class HookDsl {
-    private var beforeBlock: ((XC_MethodHook.MethodHookParam) -> Unit)? = null
-    private var afterBlock: ((XC_MethodHook.MethodHookParam) -> Unit)? = null
+/**
+ * Idiomatic Kotlin DSL extensions for modern LibXposed API 102.
+ */
+class HookDsl(val chain: XposedInterface.Chain) {
+    val thisObject: Any?
+        inline get() = chain.thisObject
 
-    fun before(block: (XC_MethodHook.MethodHookParam) -> Unit) {
-        beforeBlock = block
+    val args: Array<Any?>
+        inline get() = chain.args
+}
+
+/**
+ * Hooks a method/constructor before execution.
+ */
+fun XposedInterface.hookBefore(
+    member: Member,
+    block: (HookDsl) -> Unit
+): XposedInterface.HookHandle {
+    return hook(member).intercept { chain ->
+        block(HookDsl(chain))
+        chain.proceed()
     }
+}
 
-    fun after(block: (XC_MethodHook.MethodHookParam) -> Unit) {
-        afterBlock = block
-    }
-
-    fun toCallback(): XC_MethodHook {
-        return object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                beforeBlock?.invoke(param)
-            }
-
-            override fun afterHookedMethod(param: MethodHookParam) {
-                afterBlock?.invoke(param)
-            }
-        }
+/**
+ * Hooks a method/constructor after execution, allowing result inspection or transformation.
+ */
+fun XposedInterface.hookAfter(
+    member: Member,
+    block: (HookDsl, Any?) -> Any?
+): XposedInterface.HookHandle {
+    return hook(member).intercept { chain ->
+        val result = chain.proceed()
+        block(HookDsl(chain), result)
     }
 }
 
-fun Member.hookMethod(block: HookDsl.() -> Unit): XC_MethodHook.Unhook {
-    val dsl = HookDsl().apply(block)
-    return XposedBridge.hookMethod(this, dsl.toCallback())
-}
-
-fun Member.hookBefore(block: (XC_MethodHook.MethodHookParam) -> Unit): XC_MethodHook.Unhook {
-    return hookMethod { before(block) }
-}
-
-fun Member.hookAfter(block: (XC_MethodHook.MethodHookParam) -> Unit): XC_MethodHook.Unhook {
-    return hookMethod { after(block) }
-}
-
-fun Member.hookReplace(block: (XC_MethodHook.MethodHookParam) -> Any?): XC_MethodHook.Unhook {
-    return hookMethod {
-        before { param ->
-            param.result = block(param)
-        }
+/**
+ * Completely replaces a method/constructor with custom logic without calling original.
+ */
+fun XposedInterface.hookReplace(
+    member: Member,
+    block: (HookDsl) -> Any?
+): XposedInterface.HookHandle {
+    return hook(member).intercept { chain ->
+        block(HookDsl(chain))
     }
 }

@@ -1,9 +1,9 @@
 package io.github.codexoflost.codexmorphe.hook
 
 import android.app.Application
+import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import de.robv.android.xposed.XposedHelpers
 import org.luckypray.dexkit.DexKitBridge
 
 /**
@@ -60,7 +60,10 @@ class DexKitHookDispatcher(
         for (className in utilsCandidates) {
             val success = runCatching {
                 val clazz = bundleLoader.loadClass(className)
-                XposedHelpers.callStaticMethod(clazz, "setContext", app)
+                val method = clazz.declaredMethods.firstOrNull {
+                    it.name == "setContext" && it.parameterTypes.size == 1 && Context::class.java.isAssignableFrom(it.parameterTypes[0])
+                }?.apply { isAccessible = true }
+                method?.invoke(null, app)
                 Log.d(TAG, "Successfully initialized Morphe context via $className")
                 true
             }.getOrDefault(false)

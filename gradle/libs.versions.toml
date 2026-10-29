@@ -7,7 +7,6 @@ activityCompose = "1.13.0"
 lifecycleCompose = "2.11.0"
 coreKtx = "1.18.0"
 libxposed = "102.0.0"
-xposed = "82"
 dexkit = "2.3.0"
 okhttp = "4.12.0"
 gson = "2.11.0"
@@ -27,8 +26,7 @@ androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "u
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
 androidx-compose-material-icons = { group = "androidx.compose.material", name = "material-icons-extended" }
 
-# LibXposed API 102 & Legacy Xposed API 82
-xposed = { group = "de.robv.android.xposed", name = "api", version.ref = "xposed" }
+# LibXposed API 102
 libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "libxposed" }
 libxposed-service = { group = "io.github.libxposed", name = "service", version.ref = "libxposed" }
 
