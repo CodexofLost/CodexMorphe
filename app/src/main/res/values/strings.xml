@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">CodexMorphe</string>
+    <string name="app_description">Universal dynamic patching engine powered by Morphe and LibXposed</string>
+</resources>
