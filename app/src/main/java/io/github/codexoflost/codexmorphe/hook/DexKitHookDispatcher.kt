@@ -11,6 +11,8 @@ import io.github.codexoflost.codexmorphe.hook.model.HookDefinition
 import io.github.codexoflost.codexmorphe.hook.model.HookRecipeManifest
 import io.github.libxposed.api.XposedInterface
 import org.luckypray.dexkit.DexKitBridge
+import org.luckypray.dexkit.DexKitCacheBridge
+import org.luckypray.dexkit.annotations.DexKitExperimentalApi
 import org.luckypray.dexkit.query.enums.StringMatchType
 import org.luckypray.dexkit.result.MethodData
 import java.io.File
@@ -127,18 +129,22 @@ class DexKitHookDispatcher(
         val methodName = fp.methodName?.takeIf { it.isNotEmpty() } ?: return null
         return runCatching {
             val clz = hostLoader.loadClass(className)
-            val paramClasses = if (fp.paramTypes.isEmpty()) {
-                emptyArray()
+            if (fp.paramTypes.isEmpty()) {
+                if (methodName == "<init>") {
+                    XpReflect.findConstructorExactIfExists(clz)
+                } else {
+                    val methods = clz.declaredMethods.filter { it.name == methodName }
+                    if (methods.size == 1) methods[0] else null
+                }
             } else if (fp.paramTypes.any { it == "L" }) {
-                return null
+                null
             } else {
-                fp.paramTypes.map { loadClassOrPrimitive(cleanType(it), hostLoader) }.toTypedArray()
-            }
-
-            if (methodName == "<init>") {
-                XpReflect.findConstructorExactIfExists(clz, *paramClasses)
-            } else {
-                XpReflect.findMethodExactIfExists(clz, methodName, *paramClasses)
+                val paramClasses = fp.paramTypes.map { loadClassOrPrimitive(cleanType(it), hostLoader) }.toTypedArray()
+                if (methodName == "<init>") {
+                    XpReflect.findConstructorExactIfExists(clz, *paramClasses)
+                } else {
+                    XpReflect.findMethodExactIfExists(clz, methodName, *paramClasses)
+                }
             }
         }.getOrNull()
     }
@@ -235,9 +241,11 @@ class DexKitHookDispatcher(
             var bridge: DexKitBridge? = null
             var bgAppliedCount = 0
             val editor = cachePrefs.edit()
+            val dexCache = SharedPrefDexKitCache(cachePrefs)
 
             try {
                 ensureDexKitLoaded()
+                runCatching { DexKitCacheBridge.init(dexCache) }
                 bridge = runCatching {
                     DexKitBridge.create(app.applicationInfo.sourceDir)
                 }.onFailure {
@@ -271,9 +279,47 @@ class DexKitHookDispatcher(
                 Log.e(TAG, "Error in background DexKit worker for ${app.packageName}: ${t.message}", t)
             } finally {
                 editor.apply()
+                dexCache.save()
                 bridge?.let { runCatching { it.close() } }
                 Log.i(TAG, "Background DexKit worker completed: bound $bgAppliedCount dynamic interceptor(s) for ${app.packageName}")
             }
+        }
+    }
+
+    @OptIn(DexKitExperimentalApi::class)
+    private class SharedPrefDexKitCache(private val prefs: SharedPreferences) : DexKitCacheBridge.Cache {
+        @Suppress("UNCHECKED_CAST")
+        private val map = mutableMapOf<String, String>().apply {
+            putAll(prefs.all.filterValues { it is String } as Map<String, String>)
+        }
+
+        override fun clearAll() {
+            map.clear()
+        }
+
+        override fun getString(key: String, default: String?): String? = map.getOrDefault(key, default)
+
+        override fun getAllKeys(): Collection<String> = map.keys
+
+        override fun getStringList(key: String, default: List<String>?): List<String>? =
+            map[key]?.takeIf { it.isNotBlank() }?.split('|') ?: default
+
+        override fun putString(key: String, value: String) {
+            map[key] = value
+        }
+
+        override fun putStringList(key: String, value: List<String>) {
+            map[key] = value.joinToString("|")
+        }
+
+        override fun remove(key: String) {
+            map.remove(key)
+        }
+
+        fun save() {
+            val editor = prefs.edit()
+            map.forEach { (k, v) -> editor.putString("dkc_$k", v) }
+            editor.apply()
         }
     }
 
@@ -342,15 +388,13 @@ class DexKitHookDispatcher(
     private fun queryMethods(bridge: DexKitBridge, hook: HookDefinition): List<MethodData> {
         val fp = hook.fingerprint
         val hasClassDiscriminator = !fp.declaringClass.isNullOrEmpty() || !fp.declaringClassEndsWith.isNullOrEmpty()
+        val hasValidMethodName = !fp.methodName.isNullOrEmpty()
+        val hasStrings = fp.strings.isNotEmpty()
+        val hasLiteral = fp.literal != null
 
-        // Discriminator check: prevent overly broad queries from matching arbitrary methods.
-        // A query without a declaring class MUST specify unique strings or numeric literals.
-        val hasDiscriminator = (hasClassDiscriminator && (!fp.methodName.isNullOrEmpty() || fp.paramTypes.isNotEmpty())) ||
-                fp.strings.isNotEmpty() ||
-                fp.literal != null
-
-        if (!hasDiscriminator) {
-            Log.w(TAG, "Rejecting unconstrained global query without class or strings: ${hook.id} (method=${fp.methodName})")
+        // Strict invariant: Reject any unconstrained query that lacks a method name, strings, and literal.
+        if (!hasValidMethodName && !hasStrings && !hasLiteral) {
+            Log.w(TAG, "Rejecting unconstrained query lacking method_name, strings, and literal: ${hook.id}")
             return emptyList()
         }
 

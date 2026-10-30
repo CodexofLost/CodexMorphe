@@ -196,10 +196,19 @@ object BundleBridge {
         for (target in targets) {
             val clazz = loadClass(target) ?: continue
             runCatching {
-                val field = clazz.getDeclaredField("fallbackPackageName")
-                field.isAccessible = true
-                field.set(null, context.packageName)
-                Log.i(TAG, "Initialized $target.fallbackPackageName to ${context.packageName}")
+                val setter = runCatching { clazz.getDeclaredMethod("setFallbackPackageName", String::class.java) }.getOrNull()
+                if (setter != null) {
+                    setter.isAccessible = true
+                    setter.invoke(null, context.packageName)
+                    Log.i(TAG, "Initialized $target.fallbackPackageName via setter to ${context.packageName}")
+                } else {
+                    val field = clazz.getDeclaredField("fallbackPackageName")
+                    field.isAccessible = true
+                    field.set(null, context.packageName)
+                    Log.i(TAG, "Initialized $target.fallbackPackageName via field to ${context.packageName}")
+                }
+            }.onFailure {
+                Log.w(TAG, "Could not set fallbackPackageName on $target: ${it.message}")
             }
         }
     }

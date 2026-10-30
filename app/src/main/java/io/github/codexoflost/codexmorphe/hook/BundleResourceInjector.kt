@@ -24,8 +24,8 @@ object BundleResourceInjector {
     @Volatile
     private var cachedLoader: Any? = null // ResourcesLoader on API 30+
 
-    fun inject(pfd: ParcelFileDescriptor, context: Context) {
-        // 1. Initialize API 30+ ResourcesLoader if supported
+    @Synchronized
+    private fun ensureCachedLoader(pfd: ParcelFileDescriptor) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && cachedLoader == null) {
             runCatching {
                 val loader = ResourcesLoader()
@@ -37,6 +37,11 @@ object BundleResourceInjector {
                 Log.w(TAG, "ResourcesProvider initialization failed: ${t.message}")
             }
         }
+    }
+
+    fun inject(pfd: ParcelFileDescriptor, context: Context) {
+        // 1. Initialize API 30+ ResourcesLoader if supported
+        ensureCachedLoader(pfd)
 
         // 2. Inject into the given Context (Application)
         injectContext(pfd, context)
@@ -49,6 +54,7 @@ object BundleResourceInjector {
 
     fun injectContext(pfd: ParcelFileDescriptor, context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            ensureCachedLoader(pfd)
             val loader = cachedLoader as? ResourcesLoader
             if (loader != null) {
                 runCatching {
@@ -72,7 +78,7 @@ object BundleResourceInjector {
 
                 override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
                     Log.d(TAG, "onActivityCreated: ${activity.javaClass.name}")
-                    if (!handleWebView && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                    if (!handleWebView) {
                         runCatching {
                             WebView(activity).destroy()
                             injectContext(pfd, app)
