@@ -72,7 +72,7 @@ object BundleResourceInjector {
 
                 override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
                     Log.d(TAG, "onActivityCreated: ${activity.javaClass.name}")
-                    if (!handleWebView) {
+                    if (!handleWebView && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
                         runCatching {
                             WebView(activity).destroy()
                             injectContext(pfd, app)

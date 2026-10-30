@@ -16,6 +16,7 @@ import org.luckypray.dexkit.result.MethodData
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStreamReader
+import java.lang.reflect.Constructor
 import java.lang.reflect.Executable
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
@@ -121,6 +122,27 @@ class DexKitHookDispatcher(
         }
     }
 
+    private fun resolveDirectExecutable(fp: io.github.codexoflost.codexmorphe.hook.model.FingerprintQuery): Executable? {
+        val className = fp.declaringClass?.takeIf { it.isNotEmpty() } ?: return null
+        val methodName = fp.methodName?.takeIf { it.isNotEmpty() } ?: return null
+        return runCatching {
+            val clz = hostLoader.loadClass(className)
+            val paramClasses = if (fp.paramTypes.isEmpty()) {
+                emptyArray()
+            } else if (fp.paramTypes.any { it == "L" }) {
+                return null
+            } else {
+                fp.paramTypes.map { loadClassOrPrimitive(cleanType(it), hostLoader) }.toTypedArray()
+            }
+
+            if (methodName == "<init>") {
+                XpReflect.findConstructorExactIfExists(clz, *paramClasses)
+            } else {
+                XpReflect.findMethodExactIfExists(clz, methodName, *paramClasses)
+            }
+        }.getOrNull()
+    }
+
     private fun bindDynamicHooksWithCache(hooks: List<HookDefinition>) {
         val versionCode = runCatching {
             val pi = app.packageManager.getPackageInfo(app.packageName, 0)
@@ -134,79 +156,135 @@ class DexKitHookDispatcher(
 
         val cachePrefs = app.getSharedPreferences("dexkit_cache_${app.packageName}", Context.MODE_PRIVATE)
         val cachedVersion = cachePrefs.getLong("cached_version_code", -1L)
-        if (cachedVersion != versionCode) {
-            Log.i(TAG, "Target app version changed ($cachedVersion -> $versionCode); clearing DexKit cache.")
-            cachePrefs.edit().clear().putLong("cached_version_code", versionCode).apply()
+        val currentSchema = cachePrefs.getInt("cache_schema_version", 0)
+        val CACHE_SCHEMA_VERSION = 4
+        if (cachedVersion != versionCode || currentSchema != CACHE_SCHEMA_VERSION) {
+            Log.i(TAG, "Target app version or cache schema changed ($cachedVersion -> $versionCode, schema $currentSchema -> $CACHE_SCHEMA_VERSION); clearing DexKit cache.")
+            cachePrefs.edit().clear()
+                .putLong("cached_version_code", versionCode)
+                .putInt("cache_schema_version", CACHE_SCHEMA_VERSION)
+                .apply()
         }
 
-        var bridge: DexKitBridge? = null
         var appliedCount = 0
         var cachedCount = 0
+        var directCount = 0
+        val uncachedHooks = mutableListOf<HookDefinition>()
+        val directSigsToCache = mutableMapOf<String, String>()
 
-        try {
-            for (hook in hooks) {
-                val isEnabled = prefs.getBoolean(hook.name.ifEmpty { hook.id }, true)
-                if (!isEnabled) {
-                    Log.d(TAG, "Hook [${hook.name}] is disabled by user settings")
-                    continue
-                }
+        // Pass 1: Synchronous Fast Path (Cache hits + Direct reflection)
+        for (hook in hooks) {
+            val isEnabled = prefs.getBoolean(hook.name.ifEmpty { hook.id }, true)
+            if (!isEnabled) {
+                Log.d(TAG, "Hook [${hook.name}] is disabled by user settings")
+                continue
+            }
 
-                // 1. Check persistent signature cache
-                val cachedSigs = cachePrefs.getString("hook_${hook.id}", null)
-                if (!cachedSigs.isNullOrEmpty()) {
-                    val resolvedMethods = resolveCachedExecutables(cachedSigs)
-                    if (resolvedMethods.isNotEmpty()) {
-                        for (exec in resolvedMethods) {
-                            installInterceptor(exec, hook)
-                            appliedCount++
-                        }
-                        cachedCount++
-                        continue
-                    }
-                }
-
-                // 2. Cache miss: Lazy initialize DexKit bridge
-                if (bridge == null) {
-                    ensureDexKitLoaded()
-                    bridge = runCatching {
-                        DexKitBridge.create(app.applicationInfo.sourceDir)
-                    }.onFailure {
-                        Log.e(TAG, "Failed to create DexKitBridge for ${app.applicationInfo.sourceDir}: ${it.message}")
-                    }.getOrNull()
-                }
-
-                if (bridge == null) continue
-
-                val methods = queryMethods(bridge, hook)
-                if (methods.isEmpty()) {
-                    Log.w(TAG, "No match found for hook: ${hook.id} (${hook.name})")
-                    continue
-                }
-
-                val sigs = mutableListOf<String>()
-                for (methodData in methods) {
-                    val resolvedMethod = resolveExecutable(methodData)
-                    if (resolvedMethod != null) {
-                        installInterceptor(resolvedMethod, hook)
+            // 1. Check persistent signature cache
+            val cachedSigs = cachePrefs.getString("hook_${hook.id}", null)
+            if (!cachedSigs.isNullOrEmpty()) {
+                val resolvedMethods = resolveCachedExecutables(cachedSigs)
+                if (resolvedMethods.isNotEmpty()) {
+                    for (exec in resolvedMethods) {
+                        installInterceptor(exec, hook)
                         appliedCount++
-                        sigs.add("${methodData.className}#${methodData.name}#${methodData.paramTypeNames.joinToString(",")}#${methodData.isConstructor}")
                     }
-                }
-
-                if (sigs.isNotEmpty()) {
-                    cachePrefs.edit().putString("hook_${hook.id}", sigs.joinToString("|")).apply()
+                    cachedCount++
+                    continue
                 }
             }
-        } finally {
-            bridge?.let { runCatching { it.close() } }
+
+            // 2. Direct Reflection Fast Path (known class + method)
+            val directExec = resolveDirectExecutable(hook.fingerprint)
+            if (directExec != null) {
+                installInterceptor(directExec, hook)
+                appliedCount++
+                directCount++
+                val paramStr = if (directExec is Method) {
+                    directExec.parameterTypes.joinToString(",") { it.name }
+                } else if (directExec is Constructor<*>) {
+                    directExec.parameterTypes.joinToString(",") { it.name }
+                } else ""
+                val isCtor = directExec is Constructor<*>
+                val sig = "${directExec.declaringClass.name}#${directExec.name}#${paramStr}#${isCtor}"
+                directSigsToCache["hook_${hook.id}"] = sig
+                continue
+            }
+
+            // 3. Needs DexKit query
+            uncachedHooks.add(hook)
         }
 
-        Log.i(TAG, "Successfully bound $appliedCount dynamic interceptor(s) for ${app.packageName} ($cachedCount resolved via fast signature cache)")
+        // Commit direct signatures to cache immediately
+        if (directSigsToCache.isNotEmpty()) {
+            val editor = cachePrefs.edit()
+            directSigsToCache.forEach { (k, v) -> editor.putString(k, v) }
+            editor.apply()
+        }
+
+        Log.i(TAG, "Synchronous fast path: bound $appliedCount hook(s) ($cachedCount cached, $directCount direct reflection). ${uncachedHooks.size} remaining for DexKit.")
+
+        if (uncachedHooks.isEmpty()) {
+            Log.i(TAG, "All hooks bound in fast path; zero DexKit scanning needed.")
+            return
+        }
+
+        // Pass 2: Asynchronous Background Worker for DexKit bytecode scanning
+        // Never block Application.onCreate with hundreds of Dalvik bytecode searches!
+        kotlin.concurrent.thread(name = "CodexMorphe-DexKitWorker", priority = Thread.NORM_PRIORITY) {
+            var bridge: DexKitBridge? = null
+            var bgAppliedCount = 0
+            val editor = cachePrefs.edit()
+
+            try {
+                ensureDexKitLoaded()
+                bridge = runCatching {
+                    DexKitBridge.create(app.applicationInfo.sourceDir)
+                }.onFailure {
+                    Log.e(TAG, "Failed to create DexKitBridge for ${app.applicationInfo.sourceDir}: ${it.message}")
+                }.getOrNull()
+
+                if (bridge == null) return@thread
+
+                for (hook in uncachedHooks) {
+                    val methods = queryMethods(bridge, hook)
+                    if (methods.isEmpty()) {
+                        Log.w(TAG, "No match found for hook: ${hook.id} (${hook.name})")
+                        continue
+                    }
+
+                    val sigs = mutableListOf<String>()
+                    for (methodData in methods) {
+                        val resolvedMethod = resolveExecutable(methodData)
+                        if (resolvedMethod != null) {
+                            installInterceptor(resolvedMethod, hook)
+                            bgAppliedCount++
+                            sigs.add("${methodData.className}#${methodData.name}#${methodData.paramTypeNames.joinToString(",")}#${methodData.isConstructor}")
+                        }
+                    }
+
+                    if (sigs.isNotEmpty()) {
+                        editor.putString("hook_${hook.id}", sigs.joinToString("|"))
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "Error in background DexKit worker for ${app.packageName}: ${t.message}", t)
+            } finally {
+                editor.apply()
+                bridge?.let { runCatching { it.close() } }
+                Log.i(TAG, "Background DexKit worker completed: bound $bgAppliedCount dynamic interceptor(s) for ${app.packageName}")
+            }
+        }
     }
 
     private fun resolveCachedExecutables(cachedSigs: String): List<Executable> {
+        val items = cachedSigs.split("|")
+        if (items.size > 5) {
+            Log.w(TAG, "Rejecting corrupted cache entry with too many matches (${items.size}): $cachedSigs")
+            return emptyList()
+        }
         val list = mutableListOf<Executable>()
-        for (item in cachedSigs.split("|")) {
+        for (item in items) {
             val parts = item.split("#")
             if (parts.size != 4) return emptyList()
             val className = parts[0]
@@ -265,26 +343,20 @@ class DexKitHookDispatcher(
         val fp = hook.fingerprint
         val hasClassDiscriminator = !fp.declaringClass.isNullOrEmpty() || !fp.declaringClassEndsWith.isNullOrEmpty()
 
-        // Discriminator check: prevent overly broad queries from matching arbitrary methods
-        val hasDiscriminator = !fp.methodName.isNullOrEmpty() ||
+        // Discriminator check: prevent overly broad queries from matching arbitrary methods.
+        // A query without a declaring class MUST specify unique strings or numeric literals.
+        val hasDiscriminator = (hasClassDiscriminator && (!fp.methodName.isNullOrEmpty() || fp.paramTypes.isNotEmpty())) ||
                 fp.strings.isNotEmpty() ||
-                fp.literal != null ||
-                (fp.paramTypes.isNotEmpty() && hasClassDiscriminator)
+                fp.literal != null
 
         if (!hasDiscriminator) {
-            Log.w(TAG, "Rejecting overly broad/wildcard query without discriminator: ${hook.id} (class=${fp.declaringClass})")
+            Log.w(TAG, "Rejecting unconstrained global query without class or strings: ${hook.id} (method=${fp.methodName})")
             return emptyList()
         }
 
         // Strict guard: If declaringClass is set, but methodName, strings, and literal are all missing: REJECT!
         if (fp.methodName.isNullOrEmpty() && fp.strings.isEmpty() && fp.literal == null) {
             Log.w(TAG, "Rejecting wildcard query matching entire class: ${hook.id} (${fp.declaringClass})")
-            return emptyList()
-        }
-
-        // Strict guard: Common lifecycle or ubiquitous methods must never be queried globally without class or strings!
-        if (fp.methodName in COMMON_METHODS && !hasClassDiscriminator && fp.strings.isEmpty() && fp.literal == null) {
-            Log.w(TAG, "Rejecting unconstrained query on common method '${fp.methodName}' without class or strings: ${hook.id}")
             return emptyList()
         }
 
@@ -319,7 +391,7 @@ class DexKitHookDispatcher(
             }
         }.getOrDefault(emptyList())
 
-        if (results.isEmpty() && fp.strings.size > 1) {
+        if (results.isEmpty() && hasClassDiscriminator && fp.strings.size > 1) {
             for (str in fp.strings) {
                 if (str.length < 5) continue
                 val fallbackResults = runCatching {
