@@ -98,5 +98,9 @@ synced_commit: 79f9595
   * **FIX:** Support multi-author discovery and dynamic `manifest.entrypoints` in `DexKitHookDispatcher`: invoke both `AddOnApi.initialize(app)` and `SettingsEntry.onApplicationCreate(app)`, and initialize `setContext(app)` across `app.hushgram.*`, `app.piko.*`, and `app.morphe.*` packages.
 * **TRAP:** Intercepting Activity lifecycle hooks (`GoogleApiActivity.onCreate`) via `METHOD_REPLACE` without calling `super.onCreate` crashes Android with `SuperNotCalledException`.
   * **FIX:** Always classify lifecycle injection methods as `METHOD_AFTER` in the transpiler and dispatcher so `chain.proceed()` runs first before initializing settings UI.
+* **TRAP:** Target apps (like Instagram) omitting `android:name` in `<application>` manifest cause `param.applicationInfo.className` to be null or generic, missing the real application subclass.
+  * **FIX:** Query multiple candidate application classes (`com.instagram.app.InstagramAppShell`, `com.google.android.apps.youtube.app.YouTubeApplication`, `param.applicationInfo.className`, and `Application`) with an `AtomicBoolean` single-execution guard.
+* **TRAP:** `RETURN_TRANSFORM` casting an Object or String extension result to a primitive return type (e.g. `Boolean` or `int`), causing ART to throw `java.lang.ClassCastException`.
+  * **FIX:** Check `isBoxedTypeOf(returnType, transformed)` before replacing result. If incompatible, log warning and preserve `originalResult`.
 * **TRAP:** Force-updating bundle releases changes SHA-256 checksums, causing stale local cache conflicts.
   * **FIX:** `BundleDownloader.isBundleUpToDate()` compares local SHA-256 against remote manifest hashes, enabling the UI to surface "Update Available" badges and atomic replacements via `.tmp` staging files.

@@ -72,47 +72,61 @@ class MainHook : XposedModule() {
         Log.i(TAG, "Streaming bundle $resolvedBundleName for $packageName via openRemoteFile")
 
         // 3. Hook Application.onCreate to attach context & inject bundle
-        val appClassName = param.applicationInfo.className ?: "android.app.Application"
-        val appClass = runCatching {
-            Class.forName(appClassName, false, param.classLoader)
-        }.getOrElse {
-            Application::class.java
+        val candidateClasses = mutableListOf<Class<*>>()
+        if (param.applicationInfo.className != null) {
+            runCatching { Class.forName(param.applicationInfo.className, false, param.classLoader) }
+                .getOrNull()?.let { candidateClasses.add(it) }
+        }
+        listOf(
+            "com.instagram.app.InstagramAppShell",
+            "com.google.android.apps.youtube.app.YouTubeApplication"
+        ).forEach { knownShell ->
+            runCatching { Class.forName(knownShell, false, param.classLoader) }
+                .getOrNull()?.let { candidateClasses.add(it) }
+        }
+        candidateClasses.add(Application::class.java)
+
+        val injected = java.util.concurrent.atomic.AtomicBoolean(false)
+        var hookCount = 0
+
+        for (targetCls in candidateClasses.distinct()) {
+            val onCreateMethod = runCatching { targetCls.getDeclaredMethod("onCreate") }.getOrNull()
+                ?: runCatching { targetCls.getMethod("onCreate") }.getOrNull()
+
+            if (onCreateMethod != null) {
+                hookCount++
+                hook(onCreateMethod).intercept { chain ->
+                    val origResult = chain.proceed()
+                    val app = (chain.thisObject as? Application)
+                        ?: (chain.thisObject as? android.content.ContextWrapper)?.baseContext as? Application
+
+                    if (app != null && injected.compareAndSet(false, true)) {
+                        Log.d(TAG, "Target Application.onCreate completed for $packageName on ${targetCls.name}; injecting CodexMorphe...")
+                        try {
+                            // Inject resources
+                            BundleResourceInjector.inject(pfd, app)
+
+                            // Load MultiDex classes directly into ART memory
+                            val bundleLoader = BundleClassLoader.create(pfd, param.classLoader)
+
+                            // Hook UI framework inflation for Morphe views/drawables
+                            ExtensionClassLoading.hook(this@MainHook, bundleLoader)
+
+                            // Dispatch dynamic DexKit hooks from bundle recipes
+                            DexKitHookDispatcher(app, param.classLoader, bundleLoader, pfd, prefs, this@MainHook).dispatch()
+
+                            Log.i(TAG, "Successfully injected CodexMorphe into $packageName")
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "Failed injecting CodexMorphe into $packageName: ${t.message}", t)
+                        }
+                    }
+                    origResult
+                }
+            }
         }
 
-        val onCreateMethod = runCatching {
-            appClass.getMethod("onCreate")
-        }.getOrNull()
-
-        if (onCreateMethod != null) {
-            hook(onCreateMethod).intercept { chain ->
-                val app = chain.thisObject as? Application
-                // 1. Let target Application.onCreate finish so application singletons and host DI initialize safely
-                val origResult = chain.proceed()
-
-                if (app != null) {
-                    Log.d(TAG, "Target Application.onCreate completed for $packageName; injecting CodexMorphe...")
-                    try {
-                        // Inject resources
-                        BundleResourceInjector.inject(pfd, app)
-
-                        // Load MultiDex classes directly into ART memory
-                        val bundleLoader = BundleClassLoader.create(pfd, param.classLoader)
-
-                        // Hook UI framework inflation for Morphe views/drawables
-                        ExtensionClassLoading.hook(this@MainHook, bundleLoader)
-
-                        // Dispatch dynamic DexKit hooks from bundle recipes
-                        DexKitHookDispatcher(app, param.classLoader, bundleLoader, pfd, prefs, this@MainHook).dispatch()
-
-                        Log.i(TAG, "Successfully injected CodexMorphe into $packageName")
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "Failed injecting CodexMorphe into $packageName: ${t.message}", t)
-                    }
-                }
-                origResult
-            }
-        } else {
-            Log.w(TAG, "Application.onCreate not found for $appClassName in $packageName")
+        if (hookCount == 0) {
+            Log.w(TAG, "Application.onCreate not found for candidates in $packageName")
         }
     }
 }

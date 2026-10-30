@@ -182,7 +182,8 @@ class DexKitHookDispatcher(
         val fp = hook.fingerprint
 
         // Discriminator check: prevent overly broad queries from matching arbitrary methods
-        val hasDiscriminator = !fp.methodName.isNullOrEmpty() ||
+        val hasDiscriminator = !fp.declaringClass.isNullOrEmpty() ||
+                !fp.methodName.isNullOrEmpty() ||
                 fp.strings.isNotEmpty() ||
                 fp.paramTypes.isNotEmpty() ||
                 (fp.paramCount != null && fp.paramCount > 0) ||
@@ -291,6 +292,20 @@ class DexKitHookDispatcher(
         }
     }
 
+    private fun isBoxedTypeOf(targetClass: Class<*>, boxedObj: Any): Boolean {
+        return when (targetClass) {
+            java.lang.Boolean.TYPE, java.lang.Boolean::class.java -> boxedObj is Boolean
+            java.lang.Integer.TYPE, java.lang.Integer::class.java -> boxedObj is Int
+            java.lang.Long.TYPE, java.lang.Long::class.java -> boxedObj is Long
+            java.lang.Float.TYPE, java.lang.Float::class.java -> boxedObj is Float
+            java.lang.Double.TYPE, java.lang.Double::class.java -> boxedObj is Double
+            java.lang.Short.TYPE, java.lang.Short::class.java -> boxedObj is Short
+            java.lang.Byte.TYPE, java.lang.Byte::class.java -> boxedObj is Byte
+            java.lang.Character.TYPE, java.lang.Character::class.java -> boxedObj is Char
+            else -> targetClass.isAssignableFrom(boxedObj.javaClass)
+        }
+    }
+
     private fun resolveExecutable(data: MethodData): Executable? {
         return runCatching {
             val clz = hostLoader.loadClass(data.className)
@@ -314,7 +329,7 @@ class DexKitHookDispatcher(
         runCatching {
             xposed.hook(executable).intercept { chain ->
                 when (hook.action) {
-                    "CONSTANT_REPLACE" -> {
+                    "CONSTANT_REPLACE", "EARLY_RETURN_CONSTANT" -> {
                         val returnType = (executable as? Method)?.returnType
                         when (val v = hook.constantVal) {
                             null, "void" -> {
@@ -348,6 +363,11 @@ class DexKitHookDispatcher(
                                     java.lang.Boolean.TYPE -> false
                                     java.lang.Integer.TYPE -> 0
                                     java.lang.Long.TYPE -> 0L
+                                    java.lang.Float.TYPE -> 0.0f
+                                    java.lang.Double.TYPE -> 0.0
+                                    java.lang.Short.TYPE -> 0.toShort()
+                                    java.lang.Byte.TYPE -> 0.toByte()
+                                    java.lang.Character.TYPE -> '\u0000'
                                     else -> null
                                 }
                             } else {
@@ -384,9 +404,21 @@ class DexKitHookDispatcher(
                             val transformArgs = mutableListOf<Any?>(originalResult)
                             if (chain.thisObject != null) transformArgs.add(chain.thisObject)
                             transformArgs.addAll(chain.args)
-                            runCatching {
+                            val transformed = runCatching {
                                 BundleBridge.callStatic(extClass, extMethod, *transformArgs.toTypedArray())
-                            }.getOrNull() ?: originalResult
+                            }.getOrNull()
+
+                            val returnType = (executable as? Method)?.returnType
+                            if (transformed != null && returnType != null) {
+                                if (!isBoxedTypeOf(returnType, transformed)) {
+                                    Log.w(TAG, "Type mismatch in RETURN_TRANSFORM for ${hook.id}: expected $returnType, got ${transformed.javaClass}. Falling back to original.")
+                                    originalResult
+                                } else {
+                                    transformed
+                                }
+                            } else {
+                                transformed ?: originalResult
+                            }
                         } else {
                             originalResult
                         }
