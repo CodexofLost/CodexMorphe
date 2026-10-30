@@ -1,5 +1,5 @@
 ---
-synced_commit: 19fb87e
+synced_commit: 60e907f
 ---
 
 # CodexMorphe Architecture & Context Blueprint
@@ -90,3 +90,9 @@ synced_commit: 19fb87e
   * **FIX:** `custom-branding` is permanently excluded from the toggle UI and execution dispatcher.
 * **TRAP:** Target app crashing on missing host Litho classes during pre-hook initialization.
   * **FIX:** Defer class resolution until target app context is attached in `inContext(param)`.
+* **TRAP:** AAPT2 default application package ID `0x7f` collisions when injecting bundle resources into host apps via `ResourcesLoader` on Android 11+ (API 30+).
+  * **FIX:** Always compile bundle resources with `aapt2 link --shared-lib` (`package id=00`). Android then allocates a non-colliding dynamic runtime package ID (`0x02` or `0x80`), preventing resource type mismatches (`Resources$NotFoundException`).
+* **TRAP:** Third-party untrusted app SELinux sandbox blocks direct filesystem reads of `/data/adb/...`.
+  * **FIX:** Never probe `/data/adb/` directly from the hooked process. Always query available bundles via LibXposed API 102 `listRemoteFiles()` and stream them via `openRemoteFile()`, routing through LSPosed daemon's privileged IPC bridge.
+* **TRAP:** Hardcoding entrypoints to official YouTube AddOnApi breaks community patch authors (`hushgram`, `piko`, etc.).
+  * **FIX:** Support multi-author discovery in `DexKitHookDispatcher`: invoke both `AddOnApi.initialize(app)` and `SettingsEntry.onApplicationCreate(app)`, and initialize `setContext(app)` across `app.hushgram.*`, `app.piko.*`, and `app.morphe.*` packages.
