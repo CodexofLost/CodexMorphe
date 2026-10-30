@@ -48,8 +48,8 @@ Resolve critical integration failures across the two-project framework:
   - [x] Run unit tests (`test_recipe_builder.py`, `test_ast_transpiler.py` - 14/14 passed)
 - [x] **Phase 2: Commit, Push, and Rolling Release Gate**
   - [x] Commit builder changes & push to `origin/main` (commits `13a8f5c`, `583787d`, `088af56`)
-  - [x] Trigger GitHub Actions `build-bundles.yml` (Run #41082259161 running)
-  - [ ] User gate: fetch updated bundles once workflow succeeds
+  - [x] Trigger GitHub Actions `build-bundles.yml` (Run #41082257038 succeeded in 8m30s)
+  - [ ] 🛑 **CRITICAL USER GATE**: User taps "Fetch / Update Bundles" in CodexMorphe to download new bundles locally
 - [ ] **Phase 3: Harden `CodexMorphe` Client Engine & Absolute Decoupling**
   - [x] Remove all hardcoded author package names (`app.hushgram`, `app.piko`, etc.) across `BundleBridge.kt`, `DexKitHookDispatcher.kt`, and `ExtensionClassLoading.kt`
   - [x] Dynamic entrypoint and resource fallback resolution via `manifest.entrypoints` and `manifest.resourceFallbacks`
