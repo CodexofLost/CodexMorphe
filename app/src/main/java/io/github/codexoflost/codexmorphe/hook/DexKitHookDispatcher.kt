@@ -176,7 +176,19 @@ class DexKitHookDispatcher(
 
     private fun queryMethods(bridge: DexKitBridge, hook: HookDefinition): List<MethodData> {
         val fp = hook.fingerprint
-        return runCatching {
+
+        // Discriminator check: prevent overly broad queries from matching arbitrary methods
+        val hasDiscriminator = !fp.methodName.isNullOrEmpty() ||
+                fp.strings.isNotEmpty() ||
+                fp.paramTypes.isNotEmpty() ||
+                (fp.paramCount != null && fp.paramCount > 0) ||
+                fp.literal != null
+        if (!hasDiscriminator) {
+            Log.w(TAG, "Rejecting overly broad query without discriminator: ${hook.id}")
+            return emptyList()
+        }
+
+        val results = runCatching {
             bridge.findMethod {
                 matcher {
                     if (!fp.declaringClass.isNullOrEmpty()) {
@@ -204,6 +216,40 @@ class DexKitHookDispatcher(
                 }
             }
         }.getOrDefault(emptyList())
+
+        if (results.isEmpty() && fp.strings.size > 1) {
+            for (str in fp.strings) {
+                val fallbackResults = runCatching {
+                    bridge.findMethod {
+                        matcher {
+                            if (!fp.declaringClass.isNullOrEmpty()) {
+                                declaredClass = fp.declaringClass
+                            } else if (!fp.declaringClassEndsWith.isNullOrEmpty()) {
+                                declaredClass(fp.declaringClassEndsWith, StringMatchType.EndsWith)
+                            }
+                            if (!fp.methodName.isNullOrEmpty()) {
+                                name = fp.methodName
+                            }
+                            if (!fp.returnType.isNullOrEmpty()) {
+                                returnType = cleanType(fp.returnType)
+                            }
+                            if (fp.paramTypes.isNotEmpty()) {
+                                paramTypes(fp.paramTypes.map { cleanType(it) })
+                            } else if (fp.paramCount != null && fp.paramCount > 0) {
+                                paramCount(fp.paramCount)
+                            }
+                            usingStrings(listOf(str))
+                            if (fp.literal != null) {
+                                addUsingNumber(fp.literal)
+                            }
+                        }
+                    }
+                }.getOrDefault(emptyList())
+                if (fallbackResults.isNotEmpty()) return fallbackResults
+            }
+        }
+
+        return results
     }
 
     private fun cleanType(t: String?): String {
@@ -244,85 +290,94 @@ class DexKitHookDispatcher(
     }
 
     private fun installInterceptor(executable: Executable, hook: HookDefinition) {
+        if (Modifier.isAbstract(executable.modifiers) || executable.declaringClass.isInterface) {
+            Log.w(TAG, "Skipping abstract/interface method: $executable")
+            return
+        }
+
         val (extClass, extMethod) = parseExtensionCall(hook.extensionCall)
 
-        xposed.hook(executable).intercept { chain ->
-            when (hook.action) {
-                "CONSTANT_REPLACE" -> {
-                    when (val v = hook.constantVal) {
-                        null, "void" -> null
-                        is Boolean -> v
-                        is Number -> v
-                        else -> v.toString()
+        runCatching {
+            xposed.hook(executable).intercept { chain ->
+                when (hook.action) {
+                    "CONSTANT_REPLACE" -> {
+                        when (val v = hook.constantVal) {
+                            null, "void" -> null
+                            is Boolean -> v
+                            is Number -> v
+                            else -> v.toString()
+                        }
                     }
-                }
 
-                "EARLY_RETURN_SUPPRESSOR" -> {
-                    if (extClass != null && extMethod != null) {
-                        val shouldSuppress = BundleBridge.callStaticBoolean(extClass, extMethod, false)
-                        if (shouldSuppress) {
-                            null // Early return, suppressing target execution
+                    "EARLY_RETURN_SUPPRESSOR" -> {
+                        if (extClass != null && extMethod != null) {
+                            val shouldSuppress = BundleBridge.callStaticBoolean(extClass, extMethod, false)
+                            if (shouldSuppress) {
+                                null // Early return, suppressing target execution
+                            } else {
+                                chain.proceed()
+                            }
                         } else {
                             chain.proceed()
                         }
-                    } else {
-                        chain.proceed()
                     }
-                }
 
-                "ARG_REWRITE" -> {
-                    val idx = hook.argIndex
-                    if (extClass != null && extMethod != null && idx < chain.args.size) {
-                        val orig = chain.getArg(idx)
-                        val rewritten = BundleBridge.callStatic(extClass, extMethod, orig)
-                        if (rewritten != null) {
-                            val newArgs = chain.args.toTypedArray()
-                            newArgs[idx] = rewritten
-                            @Suppress("UNCHECKED_CAST")
-                            chain.proceed(newArgs as Array<Any>)
+                    "ARG_REWRITE" -> {
+                        val idx = hook.argIndex
+                        if (extClass != null && extMethod != null && idx < chain.args.size) {
+                            val orig = chain.getArg(idx)
+                            val rewritten = BundleBridge.callStatic(extClass, extMethod, orig)
+                            if (rewritten != null) {
+                                val newArgs = chain.args.toTypedArray()
+                                newArgs[idx] = rewritten
+                                @Suppress("UNCHECKED_CAST")
+                                chain.proceed(newArgs as Array<Any>)
+                            } else {
+                                chain.proceed()
+                            }
                         } else {
                             chain.proceed()
                         }
-                    } else {
-                        chain.proceed()
                     }
-                }
 
-                "RETURN_TRANSFORM" -> {
-                    val originalResult = chain.proceed()
-                    if (extClass != null && extMethod != null && originalResult != null) {
-                        BundleBridge.callStatic(extClass, extMethod, originalResult) ?: originalResult
-                    } else {
-                        originalResult
+                    "RETURN_TRANSFORM" -> {
+                        val originalResult = chain.proceed()
+                        if (extClass != null && extMethod != null && originalResult != null) {
+                            BundleBridge.callStatic(extClass, extMethod, originalResult) ?: originalResult
+                        } else {
+                            originalResult
+                        }
                     }
-                }
 
-                "METHOD_REPLACE" -> {
-                    if (extClass != null && extMethod != null) {
-                        val argsList = mutableListOf<Any?>()
-                        if (chain.thisObject != null) argsList.add(chain.thisObject)
-                        argsList.addAll(chain.args)
-                        BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
-                    } else {
-                        null
+                    "METHOD_REPLACE" -> {
+                        if (extClass != null && extMethod != null) {
+                            val argsList = mutableListOf<Any?>()
+                            if (chain.thisObject != null) argsList.add(chain.thisObject)
+                            argsList.addAll(chain.args)
+                            BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                        } else {
+                            null
+                        }
                     }
-                }
 
-                "METHOD_AFTER" -> {
-                    val origResult = chain.proceed()
-                    if (extClass != null && extMethod != null) {
-                        val argsList = mutableListOf<Any?>()
-                        if (chain.thisObject != null) argsList.add(chain.thisObject)
-                        argsList.addAll(chain.args)
-                        BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                    "METHOD_AFTER" -> {
+                        val origResult = chain.proceed()
+                        if (extClass != null && extMethod != null) {
+                            val argsList = mutableListOf<Any?>()
+                            if (chain.thisObject != null) argsList.add(chain.thisObject)
+                            argsList.addAll(chain.args)
+                            BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                        }
+                        origResult
                     }
-                    origResult
-                }
 
-                else -> chain.proceed()
+                    else -> chain.proceed()
+                }
             }
+            Log.d(TAG, "Bound LibXposed 102 interceptor [${hook.action}] to ${executable.name} for patch [${hook.name}]")
+        }.onFailure { e ->
+            Log.e(TAG, "Failed to hook $executable for patch ${hook.id}: ${e.message}")
         }
-        Log.d(TAG, "Bound LibXposed 102 interceptor [${hook.action}] to ${executable.name} for patch [${hook.name}]")
     }
 
     private fun parseExtensionCall(desc: String?): Pair<String?, String?> {

@@ -38,7 +38,8 @@ class MainHook : XposedModule() {
             return
         }
 
-        val activeAuthor = prefs.getString("active_author", null)
+        val activeAuthor = prefs.getString("provider_$packageName", null)
+            ?: prefs.getString("active_author", null)
         val requestedBundleName = if (!activeAuthor.isNullOrEmpty()) "$packageName-$activeAuthor-bundle.apk" else null
 
         // 2. Query available remote files via LibXposed API 102 IPC
@@ -47,6 +48,7 @@ class MainHook : XposedModule() {
 
         val resolvedBundleName = when {
             requestedBundleName != null && remoteFiles.contains(requestedBundleName) -> requestedBundleName
+            requestedBundleName != null -> remoteFiles.firstOrNull { it.startsWith("$packageName-") && it.contains(activeAuthor!!) && it.endsWith("-bundle.apk") }
             remoteFiles.contains("$packageName-official-bundle.apk") -> "$packageName-official-bundle.apk"
             else -> remoteFiles.firstOrNull { it.startsWith("$packageName-") && it.endsWith("-bundle.apk") }
                 ?: requestedBundleName

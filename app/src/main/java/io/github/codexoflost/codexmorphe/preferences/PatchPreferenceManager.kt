@@ -31,8 +31,16 @@ class PatchPreferenceManager(private val context: Context) {
     }
 
     fun setActiveAuthor(packageName: String, authorId: String) {
-        localPrefs.edit().putString("provider_$packageName", authorId).apply()
-        syncToRemote(packageName) { edit().putString("provider_$packageName", authorId).apply() }
+        localPrefs.edit()
+            .putString("provider_$packageName", authorId)
+            .putString("active_author", authorId)
+            .apply()
+        syncToRemote(packageName) {
+            edit()
+                .putString("provider_$packageName", authorId)
+                .putString("active_author", authorId)
+                .apply()
+        }
     }
 
     fun isAppEnabled(packageName: String): Boolean {
