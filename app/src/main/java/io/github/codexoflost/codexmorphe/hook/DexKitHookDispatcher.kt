@@ -318,7 +318,10 @@ class DexKitHookDispatcher(
 
                     "EARLY_RETURN_SUPPRESSOR" -> {
                         if (extClass != null && extMethod != null) {
-                            val shouldSuppress = BundleBridge.callStaticBoolean(extClass, extMethod, false)
+                            val argsList = mutableListOf<Any?>()
+                            if (chain.thisObject != null) argsList.add(chain.thisObject)
+                            argsList.addAll(chain.args)
+                            val shouldSuppress = BundleBridge.callStaticBoolean(extClass, extMethod, false, *argsList.toTypedArray())
                             if (shouldSuppress) {
                                 val returnType = (executable as? Method)?.returnType
                                 when (returnType) {
@@ -357,7 +360,10 @@ class DexKitHookDispatcher(
                     "RETURN_TRANSFORM" -> {
                         val originalResult = chain.proceed()
                         if (extClass != null && extMethod != null && originalResult != null) {
-                            BundleBridge.callStatic(extClass, extMethod, originalResult) ?: originalResult
+                            val transformArgs = mutableListOf<Any?>(originalResult)
+                            if (chain.thisObject != null) transformArgs.add(chain.thisObject)
+                            transformArgs.addAll(chain.args)
+                            BundleBridge.callStatic(extClass, extMethod, *transformArgs.toTypedArray()) ?: originalResult
                         } else {
                             originalResult
                         }

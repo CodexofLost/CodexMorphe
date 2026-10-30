@@ -37,10 +37,16 @@ object BundleBridge {
 
         return runCatching {
             val params = method.parameterTypes
-            val finalArgs = when {
+            val finalArgs: Array<out Any?> = when {
                 params.isEmpty() -> emptyArray()
-                params.size <= args.size -> args.take(params.size).toTypedArray()
-                else -> args
+                params.size == args.size && params.indices.all { isAssignable(params[it], args[it]) } -> args
+                params.size <= args.size && params.indices.all { isAssignable(params[it], args[it]) } -> args.take(params.size).toTypedArray()
+                args.size > 1 && params.size <= args.size - 1 && params.indices.all { isAssignable(params[it], args[it + 1]) } -> args.drop(1).take(params.size).toTypedArray()
+                params.size == 1 -> {
+                    val matchingArg = args.firstOrNull { isAssignable(params[0], it) }
+                    arrayOf(matchingArg)
+                }
+                else -> args.take(params.size).toTypedArray()
             }
             method.invoke(null, *finalArgs)
         }.onFailure {
@@ -52,7 +58,7 @@ object BundleBridge {
         val candidates = clazz.declaredMethods.filter { it.name == methodName }
         if (candidates.isEmpty()) return null
 
-        // 1. Exact match by count & assignability
+        // 1. Exact match by count & assignability with all args
         val exact = candidates.firstOrNull { m ->
             m.parameterTypes.size == args.size && m.parameterTypes.indices.all { i ->
                 isAssignable(m.parameterTypes[i], args[i])
@@ -63,7 +69,7 @@ object BundleBridge {
             return exact
         }
 
-        // 2. Prefix match (e.g. method takes [Activity], called with [Activity, Bundle])
+        // 2. Prefix match with all args (e.g. method takes [Activity], called with [Activity, Bundle])
         val prefix = candidates.firstOrNull { m ->
             m.parameterTypes.isNotEmpty() && m.parameterTypes.size <= args.size && m.parameterTypes.indices.all { i ->
                 isAssignable(m.parameterTypes[i], args[i])
@@ -74,7 +80,40 @@ object BundleBridge {
             return prefix
         }
 
-        // 3. Zero-arg fallback (e.g. initialize())
+        // 3. Match without thisObject (when caller prepended thisObject to argsList)
+        if (args.size > 1) {
+            val argsWithoutThis = args.drop(1).toTypedArray()
+            val matchWithoutThis = candidates.firstOrNull { m ->
+                m.parameterTypes.size == argsWithoutThis.size && m.parameterTypes.indices.all { i ->
+                    isAssignable(m.parameterTypes[i], argsWithoutThis[i])
+                }
+            }
+            if (matchWithoutThis != null) {
+                matchWithoutThis.isAccessible = true
+                return matchWithoutThis
+            }
+
+            val prefixWithoutThis = candidates.firstOrNull { m ->
+                m.parameterTypes.isNotEmpty() && m.parameterTypes.size <= argsWithoutThis.size && m.parameterTypes.indices.all { i ->
+                    isAssignable(m.parameterTypes[i], argsWithoutThis[i])
+                }
+            }
+            if (prefixWithoutThis != null) {
+                prefixWithoutThis.isAccessible = true
+                return prefixWithoutThis
+            }
+        }
+
+        // 4. Single-parameter match that matches any argument in args (e.g. takes Context or Activity)
+        val singleParam = candidates.firstOrNull { m ->
+            m.parameterTypes.size == 1 && args.any { arg -> isAssignable(m.parameterTypes[0], arg) }
+        }
+        if (singleParam != null) {
+            singleParam.isAccessible = true
+            return singleParam
+        }
+
+        // 5. Zero-arg fallback (e.g. initialize(), hide())
         val noArgs = candidates.firstOrNull { it.parameterTypes.isEmpty() }
         if (noArgs != null) {
             noArgs.isAccessible = true
