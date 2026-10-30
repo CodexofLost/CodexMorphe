@@ -57,7 +57,16 @@ object BundleBridge {
                 return@runCatching null
             }
 
-            method.invoke(null, *finalArgs)
+            if (java.lang.reflect.Modifier.isStatic(method.modifiers)) {
+                method.invoke(null, *finalArgs)
+            } else {
+                val instanceField = runCatching { method.declaringClass.getDeclaredField("INSTANCE") }.getOrNull()
+                val instance = instanceField?.let {
+                    it.isAccessible = true
+                    it.get(null)
+                }
+                method.invoke(instance, *finalArgs)
+            }
         }.onFailure {
             Log.e(TAG, "Error invoking $className#$methodName: ${it.message}", it)
         }.getOrNull()

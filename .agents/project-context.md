@@ -1,5 +1,5 @@
 ---
-synced_commit: ae8b78d
+synced_commit: 1d9392f
 ---
 
 # CodexMorphe Architecture & Context Blueprint
@@ -74,6 +74,7 @@ synced_commit: ae8b78d
 | `VersionValidator` | Target app version compatibility engine | Compares installed `versionName` with `compatiblePackages[pkg].versions` |
 | `BundleResourceInjector` | Injects AAPT2 `resources.arsc` & drawables | `ResourcesProvider.loadFromApk` (API 30+) or `AssetManager.addAssetPath` |
 | `BundleClassLoader` | In-memory MultiDex runtime loader | Maps `classes.dex`, `classes2.dex`, `classes3.dex` into `InMemoryDexClassLoader` |
+| `BundleBridge` | Extension method reflection dispatcher | Dispatches calls to bundle extensions, resolving Kotlin singleton `INSTANCE` objects and context injection |
 | `ExtensionClassLoading` | UI framework inflation hooks (from NexAlloy) | Intercepts `LayoutInflater`, `DrawableInflater`, and `Fragment.instantiate` |
 | `DexKitHookDispatcher` | Cached fingerprint resolution & method hooking | Binds `before`/`after` hooks using `DexKitBridge` and user preferences |
 | `PatchPreferenceManager` | Manages author and per-patch toggles | Excludes `custom-branding`; writes to `mService.getRemotePreferences(pkg)` |
@@ -114,3 +115,9 @@ synced_commit: ae8b78d
   * **FIX:** Wrap the host parent ClassLoader with a `BundleParentClassLoader` that intercepts requests for shadowed runtime packages (e.g. `com.google.protobuf.ExtensionRegistry`) and throws `ClassNotFoundException`, forcing `InMemoryDexClassLoader` to resolve the full implementation from its own DEX containers.
 * **TRAP:** Target app custom view inflation frameworks (e.g. Meta / Instagram `PreinflateManager`) calling `viewStub.getLayoutInflater().getContext()` crash with `NullPointerException` on cache misses because Android's `ViewStub.getLayoutInflater()` returns `null` by default if `setLayoutInflater()` was not explicitly called.
   * **FIX:** In `ExtensionClassLoading`, hook `ViewStub.getLayoutInflater()`. If `result == null`, fall back to `LayoutInflater.from(viewStub.context)`.
+* **TRAP:** In `REPLACE` / `METHOD_REPLACE`, extension methods returning `null` or throwing for non-void host methods corrupt host dependency injection (e.g. YouTube `akrh.e()` NPE attempting to read `bfco.aN` on a null reference).
+  * **FIX:** `DexKitHookDispatcher` checks if `res == null` for non-void methods or if executable is a `Constructor<*>`, falling back to `chain.proceed()` instead of returning `null`.
+* **TRAP:** Invoking extension entrypoints or methods on Kotlin singleton classes (e.g. `object SettingsEntry`) via `Method.invoke(null, ...)` throws `NullPointerException` when `@JvmStatic` is omitted.
+  * **FIX:** `BundleBridge` checks `Modifier.isStatic(method.modifiers)`; if non-static, reflects the declared `INSTANCE` field and passes the singleton instance to `method.invoke(instance, *args)`.
+* **TRAP:** `ARG_REWRITE` hooks on instance or Litho component methods expecting `(thisObject, originalArg)` fail or rewrite incorrectly when only `originalArg` is passed to the extension.
+  * **FIX:** `DexKitHookDispatcher` prepends `chain.thisObject` to rewrite arguments, verifies type compatibility via `isBoxedTypeOf`, and falls back to `chain.args`.

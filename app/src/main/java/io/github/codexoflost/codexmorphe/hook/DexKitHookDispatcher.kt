@@ -598,10 +598,17 @@ class DexKitHookDispatcher(
                         val idx = hook.argIndex
                         if (extClass != null && extMethod != null && idx < chain.args.size) {
                             val orig = chain.getArg(idx)
+                            val rewriteArgs = mutableListOf<Any?>()
+                            if (chain.thisObject != null) rewriteArgs.add(chain.thisObject)
+                            rewriteArgs.add(orig)
                             val rewritten = runCatching {
-                                BundleBridge.callStatic(extClass, extMethod, orig)
+                                BundleBridge.callStatic(extClass, extMethod, *rewriteArgs.toTypedArray())
+                                    ?: BundleBridge.callStatic(extClass, extMethod, orig)
                             }.getOrNull()
-                            if (rewritten != null) {
+
+                            val expectedArgType = (executable as? Method)?.parameterTypes?.getOrNull(idx)
+                                ?: (executable as? Constructor<*>)?.parameterTypes?.getOrNull(idx)
+                            if (rewritten != null && expectedArgType != null && isBoxedTypeOf(expectedArgType, rewritten)) {
                                 val newArgs = chain.args.toTypedArray()
                                 newArgs[idx] = rewritten
                                 @Suppress("UNCHECKED_CAST")
@@ -633,7 +640,7 @@ class DexKitHookDispatcher(
                                     transformed
                                 }
                             } else {
-                                transformed ?: originalResult
+                                originalResult
                             }
                         } else {
                             originalResult
@@ -641,15 +648,26 @@ class DexKitHookDispatcher(
                     }
 
                     "REPLACE", "METHOD_REPLACE" -> {
-                        if (executable.name in LIFECYCLE_METHODS) {
+                        if (executable.name in LIFECYCLE_METHODS || executable is Constructor<*>) {
                             chain.proceed()
                         } else if (extClass != null && extMethod != null) {
                             val argsList = mutableListOf<Any?>()
                             if (chain.thisObject != null) argsList.add(chain.thisObject)
                             argsList.addAll(chain.args)
-                            runCatching {
+                            val res = runCatching {
                                 BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
-                            }.getOrElse { chain.proceed() }
+                            }.getOrNull()
+
+                            val returnType = (executable as? Method)?.returnType
+                            if (res == null && returnType != null && returnType != java.lang.Void.TYPE) {
+                                Log.w(TAG, "REPLACE hook returned null for non-void method $executable; falling back to original proceed()")
+                                chain.proceed()
+                            } else if (res != null && returnType != null && !isBoxedTypeOf(returnType, res)) {
+                                Log.w(TAG, "REPLACE hook return type mismatch for $executable (expected $returnType, got ${res.javaClass}); falling back to proceed()")
+                                chain.proceed()
+                            } else {
+                                res
+                            }
                         } else {
                             chain.proceed()
                         }
