@@ -48,6 +48,15 @@ object BundleBridge {
                 }
                 else -> args.take(params.size).toTypedArray()
             }
+
+            val isCompatible = params.size == finalArgs.size && params.indices.all { i ->
+                isAssignable(params[i], finalArgs[i])
+            }
+            if (!isCompatible) {
+                Log.w(TAG, "Skipping invocation of $className#$methodName: parameter type mismatch")
+                return@runCatching null
+            }
+
             method.invoke(null, *finalArgs)
         }.onFailure {
             Log.e(TAG, "Error invoking $className#$methodName: ${it.message}", it)

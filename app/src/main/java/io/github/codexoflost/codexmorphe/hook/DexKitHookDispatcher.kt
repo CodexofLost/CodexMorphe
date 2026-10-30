@@ -88,6 +88,10 @@ class DexKitHookDispatcher(
         }
     }
 
+    private val LIFECYCLE_METHODS = setOf(
+        "onCreate", "onActivityCreated", "attachBaseContext", "onResume", "onStart", "onPause", "onStop", "onDestroy"
+    )
+
     private fun extractHookManifest(): HookRecipeManifest? {
         return runCatching {
             runCatching {
@@ -97,7 +101,7 @@ class DexKitHookDispatcher(
                 ZipInputStream(fis).use { zis ->
                     var entry = zis.nextEntry
                     while (entry != null) {
-                        if (entry.name == "hooks.json") {
+                        if (entry.name == "hooks.json" || entry.name.endsWith("hooks.json")) {
                             val reader = InputStreamReader(zis)
                             return@runCatching Gson().fromJson(reader, HookRecipeManifest::class.java)
                         }
@@ -202,8 +206,10 @@ class DexKitHookDispatcher(
                     if (!fp.returnType.isNullOrEmpty()) {
                         returnType = cleanType(fp.returnType)
                     }
-                    if (fp.paramTypes.isNotEmpty()) {
+                    if (fp.paramTypes.isNotEmpty() && fp.paramTypes.none { it == "L" }) {
                         paramTypes(fp.paramTypes.map { cleanType(it) })
+                    } else if (fp.paramTypes.isNotEmpty() && fp.paramTypes.any { it == "L" }) {
+                        paramCount(fp.paramTypes.size)
                     } else if (fp.paramCount != null && fp.paramCount > 0) {
                         paramCount(fp.paramCount)
                     }
@@ -219,6 +225,7 @@ class DexKitHookDispatcher(
 
         if (results.isEmpty() && fp.strings.size > 1) {
             for (str in fp.strings) {
+                if (str.length < 5) continue
                 val fallbackResults = runCatching {
                     bridge.findMethod {
                         matcher {
@@ -233,8 +240,10 @@ class DexKitHookDispatcher(
                             if (!fp.returnType.isNullOrEmpty()) {
                                 returnType = cleanType(fp.returnType)
                             }
-                            if (fp.paramTypes.isNotEmpty()) {
+                            if (fp.paramTypes.isNotEmpty() && fp.paramTypes.none { it == "L" }) {
                                 paramTypes(fp.paramTypes.map { cleanType(it) })
+                            } else if (fp.paramTypes.isNotEmpty() && fp.paramTypes.any { it == "L" }) {
+                                paramCount(fp.paramTypes.size)
                             } else if (fp.paramCount != null && fp.paramCount > 0) {
                                 paramCount(fp.paramCount)
                             }
@@ -247,6 +256,11 @@ class DexKitHookDispatcher(
                 }.getOrDefault(emptyList())
                 if (fallbackResults.isNotEmpty()) return fallbackResults
             }
+        }
+
+        if (results.size > 5 && fp.declaringClass.isNullOrEmpty() && fp.methodName.isNullOrEmpty()) {
+            Log.w(TAG, "Rejecting query that matched too many methods (${results.size}) without class or method name: ${hook.id}")
+            return emptyList()
         }
 
         return results
@@ -317,11 +331,16 @@ class DexKitHookDispatcher(
                     }
 
                     "EARLY_RETURN_SUPPRESSOR" -> {
-                        if (extClass != null && extMethod != null) {
+                        if (executable.name in LIFECYCLE_METHODS) {
+                            chain.proceed()
+                        } else if (extClass != null && extMethod != null) {
                             val argsList = mutableListOf<Any?>()
                             if (chain.thisObject != null) argsList.add(chain.thisObject)
                             argsList.addAll(chain.args)
-                            val shouldSuppress = BundleBridge.callStaticBoolean(extClass, extMethod, false, *argsList.toTypedArray())
+                            val shouldSuppress = runCatching {
+                                BundleBridge.callStaticBoolean(extClass, extMethod, false, *argsList.toTypedArray())
+                            }.getOrDefault(false)
+
                             if (shouldSuppress) {
                                 val returnType = (executable as? Method)?.returnType
                                 when (returnType) {
@@ -343,7 +362,9 @@ class DexKitHookDispatcher(
                         val idx = hook.argIndex
                         if (extClass != null && extMethod != null && idx < chain.args.size) {
                             val orig = chain.getArg(idx)
-                            val rewritten = BundleBridge.callStatic(extClass, extMethod, orig)
+                            val rewritten = runCatching {
+                                BundleBridge.callStatic(extClass, extMethod, orig)
+                            }.getOrNull()
                             if (rewritten != null) {
                                 val newArgs = chain.args.toTypedArray()
                                 newArgs[idx] = rewritten
@@ -363,30 +384,40 @@ class DexKitHookDispatcher(
                             val transformArgs = mutableListOf<Any?>(originalResult)
                             if (chain.thisObject != null) transformArgs.add(chain.thisObject)
                             transformArgs.addAll(chain.args)
-                            BundleBridge.callStatic(extClass, extMethod, *transformArgs.toTypedArray()) ?: originalResult
+                            runCatching {
+                                BundleBridge.callStatic(extClass, extMethod, *transformArgs.toTypedArray())
+                            }.getOrNull() ?: originalResult
                         } else {
                             originalResult
                         }
                     }
 
                     "METHOD_REPLACE" -> {
-                        if (extClass != null && extMethod != null) {
+                        if (executable.name in LIFECYCLE_METHODS) {
+                            chain.proceed()
+                        } else if (extClass != null && extMethod != null) {
                             val argsList = mutableListOf<Any?>()
                             if (chain.thisObject != null) argsList.add(chain.thisObject)
                             argsList.addAll(chain.args)
-                            BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                            runCatching {
+                                BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                            }.getOrElse { chain.proceed() }
                         } else {
-                            null
+                            chain.proceed()
                         }
                     }
 
                     "METHOD_AFTER" -> {
                         val origResult = chain.proceed()
                         if (extClass != null && extMethod != null) {
-                            val argsList = mutableListOf<Any?>()
-                            if (chain.thisObject != null) argsList.add(chain.thisObject)
-                            argsList.addAll(chain.args)
-                            BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                            runCatching {
+                                val argsList = mutableListOf<Any?>()
+                                if (chain.thisObject != null) argsList.add(chain.thisObject)
+                                argsList.addAll(chain.args)
+                                BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                            }.onFailure { e ->
+                                Log.w(TAG, "Error in METHOD_AFTER hook for ${hook.id}: ${e.message}")
+                            }
                         }
                         origResult
                     }
