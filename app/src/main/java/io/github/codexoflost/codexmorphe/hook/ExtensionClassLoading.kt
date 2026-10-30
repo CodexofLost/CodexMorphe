@@ -23,6 +23,10 @@ object ExtensionClassLoading {
 
     private val viewConstructors = ConcurrentHashMap<String, Constructor<out View>>()
 
+    private fun isExtensionClass(name: String): Boolean {
+        return name.contains(".extension.") || name.startsWith("app.morphe.") || name.startsWith("app.hushgram.") || name.startsWith("app.piko.")
+    }
+
     fun hook(module: XposedInterface, bundleLoader: ClassLoader) {
         val hasViewContext = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
         val createViewMethod = if (hasViewContext) {
@@ -46,7 +50,7 @@ object ExtensionClassLoading {
             val offset = if (hasViewContext) 1 else 0
             val prefix = chain.args[offset + 1] as String?
             val name = prefix.orEmpty() + (chain.args[offset] as String)
-            if (!name.startsWith("app.morphe.extension.")) {
+            if (!isExtensionClass(name)) {
                 return@intercept chain.proceed()
             }
 
@@ -86,7 +90,7 @@ object ExtensionClassLoading {
             )
             module.hook(inflateFromClassMethod).intercept { chain ->
                 val name = chain.args[0] as String
-                if (!name.startsWith("app.morphe.extension.")) {
+                if (!isExtensionClass(name)) {
                     return@intercept chain.proceed()
                 }
                 try {

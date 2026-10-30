@@ -52,9 +52,14 @@ class DexKitHookDispatcher(
     }
 
     private fun initializeMorpheContext() {
-        // Find and invoke app.morphe.extension.shared.Utils.setContext(app)
+        // Find and invoke setContext(app) across supported community patch authors
         val utilsCandidates = listOf(
             "app.morphe.extension.shared.Utils",
+            "app.hushgram.extension.shared.Utils",
+            "app.piko.extension.shared.Utils",
+            "app.rushiranpise.extension.shared.Utils",
+            "app.devanced.extension.shared.Utils",
+            "app.okish.extension.shared.Utils",
             "app.morphe.extension.shared.utils.Utils"
         )
         for (className in utilsCandidates) {
@@ -64,7 +69,7 @@ class DexKitHookDispatcher(
                     it.name == "setContext" && it.parameterTypes.size == 1 && Context::class.java.isAssignableFrom(it.parameterTypes[0])
                 }?.apply { isAccessible = true }
                 method?.invoke(null, app)
-                Log.d(TAG, "Successfully initialized Morphe context via $className")
+                Log.d(TAG, "Successfully initialized context via $className")
                 true
             }.getOrDefault(false)
             if (success) break
@@ -72,22 +77,47 @@ class DexKitHookDispatcher(
     }
 
     private fun initializeExtensions(bridge: DexKitBridge) {
-        // Hook into AddOnApi entrypoint if present
-        runCatching {
-            val addOnApiClass = bundleLoader.loadClass("app.morphe.extension.youtube.addon.AddOnApi")
-            val initMethod = addOnApiClass.declaredMethods.find {
-                it.parameterTypes.size == 1 && Application::class.java.isAssignableFrom(it.parameterTypes[0])
+        // Candidate initializers across authors and applications
+        val entryCandidates = listOf(
+            "app.hushgram.extension.instagram.settings.SettingsEntry",
+            "app.piko.extension.instagram.settings.SettingsEntry",
+            "app.piko.extension.twitter.settings.SettingsEntry",
+            "app.morphe.extension.reddit.settings.SettingsEntry",
+            "app.morphe.extension.youtube.addon.AddOnApi",
+            "app.morphe.extension.music.addon.AddOnApi"
+        )
+
+        for (className in entryCandidates) {
+            runCatching {
+                val clazz = bundleLoader.loadClass(className)
+                val entryMethod = clazz.declaredMethods.firstOrNull { m ->
+                    java.lang.reflect.Modifier.isStatic(m.modifiers) &&
+                    (m.name == "onApplicationCreate" || m.name == "initialize" || m.name == "init") &&
+                    m.parameterTypes.size == 1 &&
+                    (Context::class.java.isAssignableFrom(m.parameterTypes[0]) || Application::class.java.isAssignableFrom(m.parameterTypes[0]))
+                }?.apply { isAccessible = true }
+
+                if (entryMethod != null) {
+                    entryMethod.invoke(null, app)
+                    Log.i(TAG, "Successfully invoked extension entrypoint: $className.${entryMethod.name}")
+                }
             }
-            initMethod?.invoke(null, app)
-            Log.d(TAG, "Successfully invoked YouTube AddOnApi.initialize")
         }
 
         // Initialize SponsorBlock if toggle is enabled (defaults to true)
         val sponsorBlockEnabled = prefs.getBoolean("morphe_sponsorblock", true)
         if (sponsorBlockEnabled) {
-            runCatching {
-                val sbClass = bundleLoader.loadClass("app.morphe.extension.shared.sponsorblock.SponsorBlockApi")
-                Log.d(TAG, "SponsorBlock enabled and class loaded: ${sbClass.name}")
+            val sbCandidates = listOf(
+                "app.morphe.extension.shared.sponsorblock.SponsorBlockApi",
+                "app.hushgram.extension.shared.sponsorblock.SponsorBlockApi",
+                "app.piko.extension.shared.sponsorblock.SponsorBlockApi"
+            )
+            for (sbName in sbCandidates) {
+                val sbClass = runCatching { bundleLoader.loadClass(sbName) }.getOrNull()
+                if (sbClass != null) {
+                    Log.d(TAG, "SponsorBlock enabled and class loaded: $sbName")
+                    break
+                }
             }
         }
     }

@@ -20,7 +20,7 @@ jobs:
     - name: set up JDK
       uses: actions/setup-java@v5
       with:
-        java-version: '17'
+        java-version: '21'
         distribution: 'temurin'
         cache: gradle
 
@@ -40,7 +40,7 @@ jobs:
 
     - run: |
         cd app/build/outputs/apk/release/
-        mv app-release.apk NexAlloy-${{ github.ref_name }}.apk
-        gh release create --prerelease ${{ github.ref_name }} NexAlloy-${{ github.ref_name }}.apk
+        mv app-release.apk CodexMorphe-${{ github.ref_name }}.apk
+        gh release create --prerelease ${{ github.ref_name }} CodexMorphe-${{ github.ref_name }}.apk
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

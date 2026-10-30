@@ -35,26 +35,36 @@ class MainHook : XposedModule() {
             return
         }
 
-        val activeAuthor = prefs.getString("active_author", "official") ?: "official"
-        val bundleName = "$packageName-$activeAuthor-bundle.apk"
+        val activeAuthor = prefs.getString("active_author", null)
+        val requestedBundleName = if (!activeAuthor.isNullOrEmpty()) "$packageName-$activeAuthor-bundle.apk" else null
 
-        // 2. Open remote bundle via LibXposed API 102 ParcelFileDescriptor streaming
-        val pfd = runCatching {
-            openRemoteFile(bundleName)
-        }.getOrNull() ?: runCatching {
-            // Direct file descriptor fallback if openRemoteFile IPC encounters framework glitch
-            val directFile = java.io.File("/data/adb/lspd/modules/0/io.github.codexoflost.codexmorphe/files/$bundleName")
-            if (directFile.exists() && directFile.canRead()) {
-                android.os.ParcelFileDescriptor.open(directFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
-            } else null
-        }.getOrNull()
+        // 2. Query available remote files via LibXposed API 102 IPC
+        val remoteFiles = runCatching { listRemoteFiles() }.getOrNull() ?: emptyArray()
+        Log.d(TAG, "Available remote files: ${remoteFiles.joinToString()}")
+
+        val resolvedBundleName = when {
+            requestedBundleName != null && remoteFiles.contains(requestedBundleName) -> requestedBundleName
+            remoteFiles.contains("$packageName-official-bundle.apk") -> "$packageName-official-bundle.apk"
+            else -> remoteFiles.firstOrNull { it.startsWith("$packageName-") && it.endsWith("-bundle.apk") }
+                ?: requestedBundleName
+        }
+
+        val pfd = if (resolvedBundleName != null) {
+            runCatching { openRemoteFile(resolvedBundleName) }.getOrNull() ?: runCatching {
+                // Direct file fallback if module is running in system context
+                val directFile = java.io.File("/data/adb/lspd/modules/0/io.github.codexoflost.codexmorphe/files/$resolvedBundleName")
+                if (directFile.exists() && directFile.canRead()) {
+                    android.os.ParcelFileDescriptor.open(directFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+                } else null
+            }.getOrNull()
+        } else null
 
         if (pfd == null) {
-            Log.d(TAG, "No bundle APK installed for $packageName ($bundleName); skipping hook.")
+            Log.d(TAG, "No bundle APK installed for $packageName; skipping hook.")
             return
         }
 
-        Log.i(TAG, "Streaming bundle $bundleName for $packageName via openRemoteFile")
+        Log.i(TAG, "Streaming bundle $resolvedBundleName for $packageName via openRemoteFile")
 
         // 3. Hook Application.onCreate to attach context & inject bundle
         val appClassName = param.applicationInfo.className ?: "android.app.Application"
