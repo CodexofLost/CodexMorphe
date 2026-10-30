@@ -256,14 +256,20 @@ class DexKitHookDispatcher(
         }
     }
 
+    private val COMMON_METHODS = setOf(
+        "onCreate", "onActivityCreated", "attachBaseContext", "onResume", "onStart",
+        "onPause", "onStop", "onDestroy", "run", "toString", "equals", "hashCode", "close"
+    )
+
     private fun queryMethods(bridge: DexKitBridge, hook: HookDefinition): List<MethodData> {
         val fp = hook.fingerprint
+        val hasClassDiscriminator = !fp.declaringClass.isNullOrEmpty() || !fp.declaringClassEndsWith.isNullOrEmpty()
 
         // Discriminator check: prevent overly broad queries from matching arbitrary methods
         val hasDiscriminator = !fp.methodName.isNullOrEmpty() ||
                 fp.strings.isNotEmpty() ||
                 fp.literal != null ||
-                (fp.paramTypes.isNotEmpty() && !fp.declaringClass.isNullOrEmpty())
+                (fp.paramTypes.isNotEmpty() && hasClassDiscriminator)
 
         if (!hasDiscriminator) {
             Log.w(TAG, "Rejecting overly broad/wildcard query without discriminator: ${hook.id} (class=${fp.declaringClass})")
@@ -273,6 +279,12 @@ class DexKitHookDispatcher(
         // Strict guard: If declaringClass is set, but methodName, strings, and literal are all missing: REJECT!
         if (fp.methodName.isNullOrEmpty() && fp.strings.isEmpty() && fp.literal == null) {
             Log.w(TAG, "Rejecting wildcard query matching entire class: ${hook.id} (${fp.declaringClass})")
+            return emptyList()
+        }
+
+        // Strict guard: Common lifecycle or ubiquitous methods must never be queried globally without class or strings!
+        if (fp.methodName in COMMON_METHODS && !hasClassDiscriminator && fp.strings.isEmpty() && fp.literal == null) {
+            Log.w(TAG, "Rejecting unconstrained query on common method '${fp.methodName}' without class or strings: ${hook.id}")
             return emptyList()
         }
 
@@ -342,13 +354,13 @@ class DexKitHookDispatcher(
             }
         }
 
-        if (results.size > 1 && fp.methodName.isNullOrEmpty() && fp.strings.isEmpty()) {
-            Log.w(TAG, "Rejecting query that matched multiple methods (${results.size}) without method name: ${hook.id}")
+        if (results.size > 1 && !hasClassDiscriminator && fp.strings.isEmpty()) {
+            Log.w(TAG, "Rejecting query that matched multiple methods (${results.size}) across classes without declaringClass or strings: ${hook.id} (method=${fp.methodName})")
             return emptyList()
         }
 
-        if (results.size > 5 && fp.declaringClass.isNullOrEmpty() && fp.methodName.isNullOrEmpty()) {
-            Log.w(TAG, "Rejecting query that matched too many methods (${results.size}) without class or method name: ${hook.id}")
+        if (results.size > 5 && !hasClassDiscriminator) {
+            Log.w(TAG, "Rejecting query that matched too many methods (${results.size}) without declaringClass: ${hook.id}")
             return emptyList()
         }
 
