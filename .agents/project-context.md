@@ -94,8 +94,14 @@ synced_commit: 79f9595
   * **FIX:** Always compile bundle resources with `aapt2 link --shared-lib` (`package id=00`). Android then allocates a non-colliding dynamic runtime package ID (`0x02` or `0x80`), preventing resource type mismatches (`Resources$NotFoundException`).
 * **TRAP:** Third-party untrusted app SELinux sandbox blocks direct filesystem reads of `/data/adb/...`.
   * **FIX:** Never probe `/data/adb/` directly from the hooked process. Always query available bundles via LibXposed API 102 `listRemoteFiles()` and stream them via `openRemoteFile()`, routing through LSPosed daemon's privileged IPC bridge.
-* **TRAP:** Hardcoding entrypoints to official YouTube AddOnApi breaks community patch authors (`hushgram`, `piko`, etc.).
-  * **FIX:** Support multi-author discovery and dynamic `manifest.entrypoints` in `DexKitHookDispatcher`: invoke both `AddOnApi.initialize(app)` and `SettingsEntry.onApplicationCreate(app)`, and initialize `setContext(app)` across `app.hushgram.*`, `app.piko.*`, and `app.morphe.*` packages.
+* **TRAP:** Hardcoding author or source package names in the client engine violates engine-bundle decoupling and breaks multi-author extensibility.
+  * **FIX:** Keep `CodexMorphe` 100% vendor-agnostic. All initializers (`SettingsEntry#onApplicationCreate`, `AddOnApi#initialize`, `Utils#setContext`) and resource fallback targets (`ResourceUtils`) are discovered by `codexmorphe-builder` and passed via `manifest.entrypoints` and `manifest.resourceFallbacks`. The client engine dynamically resolves and invokes them at runtime with zero hardcoded author names.
+* **TRAP:** Unconstrained / wildcard DexKit queries matching entire classes cause fatal ART crashes (e.g. YouTube NPE in `aiat.e()`) and flood logs.
+  * **FIX:** Strict query guards in `DexKitHookDispatcher` and discriminator validation in `recipe_builder.py` reject any fingerprint query lacking method name, strings, or literals.
+* **TRAP:** Target app Activities failing to inflate Morphe layouts or custom views with `ResourceNotFoundException`.
+  * **FIX:** Register `Application.ActivityLifecycleCallbacks` (`onActivityCreated`, `onActivityResumed`) in `BundleResourceInjector` to dynamically attach bundle resources to Activity contexts with a `WebView` guard.
+* **TRAP:** Main-thread bytecode scanning via DexKit during `Application.onCreate` blocks app startup for 10–20s and triggers ANRs.
+  * **FIX:** `DexKitCacheBridge` caches resolved `Method`/`Constructor` signatures in `SharedPreferences` keyed by target app package and `versionCode` for instant reflection on subsequent boots.
 * **TRAP:** Intercepting Activity lifecycle hooks (`GoogleApiActivity.onCreate`) via `METHOD_REPLACE` without calling `super.onCreate` crashes Android with `SuperNotCalledException`.
   * **FIX:** Always classify lifecycle injection methods as `METHOD_AFTER` in the transpiler and dispatcher so `chain.proceed()` runs first before initializing settings UI.
 * **TRAP:** Target apps (like Instagram) omitting `android:name` in `<application>` manifest cause `param.applicationInfo.className` to be null or generic, missing the real application subclass.
