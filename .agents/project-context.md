@@ -1,5 +1,5 @@
 ---
-synced_commit: 79f9595
+synced_commit: ae8b78d
 ---
 
 # CodexMorphe Architecture & Context Blueprint
@@ -110,3 +110,7 @@ synced_commit: 79f9595
   * **FIX:** Check `isBoxedTypeOf(returnType, transformed)` before replacing result. If incompatible, log warning and preserve `originalResult`.
 * **TRAP:** Force-updating bundle releases changes SHA-256 checksums, causing stale local cache conflicts.
   * **FIX:** `BundleDownloader.isBundleUpToDate()` compares local SHA-256 against remote manifest hashes, enabling the UI to surface "Update Available" badges and atomic replacements via `.tmp` staging files.
+* **TRAP:** Target app APKs bundling stripped stubs of shared runtime libraries (e.g. YouTube's `classes3.dex` defining `com.google.protobuf.ExtensionRegistryLite` without `getEmptyRegistry()`) shadow complete library implementations in the bundle due to parent-first ClassLoader delegation, causing `NoSuchMethodError`.
+  * **FIX:** Wrap the host parent ClassLoader with a `BundleParentClassLoader` that intercepts requests for shadowed runtime packages (e.g. `com.google.protobuf.ExtensionRegistry`) and throws `ClassNotFoundException`, forcing `InMemoryDexClassLoader` to resolve the full implementation from its own DEX containers.
+* **TRAP:** Target app custom view inflation frameworks (e.g. Meta / Instagram `PreinflateManager`) calling `viewStub.getLayoutInflater().getContext()` crash with `NullPointerException` on cache misses because Android's `ViewStub.getLayoutInflater()` returns `null` by default if `setLayoutInflater()` was not explicitly called.
+  * **FIX:** In `ExtensionClassLoading`, hook `ViewStub.getLayoutInflater()`. If `result == null`, fall back to `LayoutInflater.from(viewStub.context)`.

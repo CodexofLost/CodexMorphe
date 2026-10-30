@@ -141,5 +141,24 @@ object ExtensionClassLoading {
                 }
             }
         }
+
+        // Guard against framework NullPointerException when ViewStub.getLayoutInflater() is null
+        // in apps like Instagram that assume ViewStub always has a non-null LayoutInflater.
+        runCatching {
+            val viewStubGetLayoutInflater = android.view.ViewStub::class.java.getDeclaredMethod("getLayoutInflater")
+            module.hook(viewStubGetLayoutInflater).intercept { chain ->
+                val result = chain.proceed()
+                if (result != null) {
+                    result
+                } else {
+                    val viewStub = chain.thisObject as? android.view.ViewStub
+                    if (viewStub != null) {
+                        LayoutInflater.from(viewStub.context)
+                    } else {
+                        null
+                    }
+                }
+            }
+        }
     }
 }

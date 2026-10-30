@@ -15,6 +15,26 @@ object BundleClassLoader {
 
     private const val TAG = "CodexMorphe/DexLoader"
 
+    /**
+     * Parent ClassLoader wrapper that forces certain shadowed runtime library classes
+     * (like ExtensionRegistryLite) to be resolved from the bundle's DEX containers
+     * instead of the host app's stripped or incompatible stubs.
+     */
+    private class BundleParentClassLoader(
+        private val hostLoader: ClassLoader
+    ) : ClassLoader(hostLoader) {
+
+        override fun loadClass(name: String, resolve: Boolean): Class<*> {
+            // If the host app (e.g. YouTube) has stripped stubs for ExtensionRegistry,
+            // force the InMemoryDexClassLoader to look in its own DEX buffers where the full
+            // implementation lives.
+            if (name.startsWith("com.google.protobuf.ExtensionRegistry")) {
+                throw ClassNotFoundException(name)
+            }
+            return hostLoader.loadClass(name)
+        }
+    }
+
     fun create(pfd: ParcelFileDescriptor, parent: ClassLoader): ClassLoader {
         val dexBuffers = mutableListOf<ByteBuffer>()
 
@@ -41,6 +61,7 @@ object BundleClassLoader {
         }
 
         Log.d(TAG, "Initializing InMemoryDexClassLoader with ${dexBuffers.size} DEX containers")
-        return InMemoryDexClassLoader(dexBuffers.toTypedArray(), parent)
+        val parentWrapper = BundleParentClassLoader(parent)
+        return InMemoryDexClassLoader(dexBuffers.toTypedArray(), parentWrapper)
     }
 }
