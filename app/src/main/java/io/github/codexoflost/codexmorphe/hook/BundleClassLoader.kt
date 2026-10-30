@@ -18,6 +18,9 @@ object BundleClassLoader {
     fun create(pfd: ParcelFileDescriptor, parent: ClassLoader): ClassLoader {
         val dexBuffers = mutableListOf<ByteBuffer>()
 
+        runCatching {
+            android.system.Os.lseek(pfd.fileDescriptor, 0, android.system.OsConstants.SEEK_SET)
+        }
         ZipInputStream(FileInputStream(pfd.fileDescriptor)).use { zis ->
             var entry: ZipEntry?
             while (zis.nextEntry.also { entry = it } != null) {

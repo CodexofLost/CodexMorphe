@@ -36,6 +36,27 @@ class BundleDownloader(private val context: Context) {
     val bundlesDir: File
         get() = File(context.filesDir, "bundles").apply { mkdirs() }
 
+    fun computeSha256(file: File): String {
+        if (!file.exists()) return ""
+        return runCatching {
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(16384)
+                var bytesRead: Int
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    digest.update(buffer, 0, bytesRead)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it) }
+        }.getOrDefault("")
+    }
+
+    fun isBundleUpToDate(file: File, expectedSha256: String): Boolean {
+        if (!file.exists() || expectedSha256.isBlank()) return false
+        val localHash = computeSha256(file)
+        return localHash.equals(expectedSha256, ignoreCase = true)
+    }
+
     fun downloadBundle(
         packageName: String,
         assetName: String,

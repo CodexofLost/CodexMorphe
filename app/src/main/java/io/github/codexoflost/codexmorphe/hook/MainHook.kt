@@ -14,10 +14,13 @@ class MainHook : XposedModule() {
         private const val TAG = "CodexMorphe/MainHook"
         var modulePath: String? = null
             private set
+        var moduleNativeLibDir: String? = null
+            private set
     }
 
     override fun onModuleLoaded(param: XposedModuleInterface.ModuleLoadedParam) {
         modulePath = moduleApplicationInfo.sourceDir
+        moduleNativeLibDir = moduleApplicationInfo.nativeLibraryDir
         Log.i(TAG, "CodexMorphe module loaded for process ${param.processName} from $modulePath (API $apiVersion)")
     }
 
@@ -93,18 +96,18 @@ class MainHook : XposedModule() {
                         // Hook UI framework inflation for Morphe views/drawables
                         ExtensionClassLoading.hook(this@MainHook, bundleLoader)
 
-                        // Dispatch DexKit hooks
-                        DexKitHookDispatcher(app, param.classLoader, bundleLoader, prefs).dispatch()
+                        // Dispatch dynamic DexKit hooks from bundle recipes
+                        DexKitHookDispatcher(app, param.classLoader, bundleLoader, pfd, prefs, this@MainHook).dispatch()
 
                         Log.i(TAG, "Successfully injected CodexMorphe into $packageName")
                     } catch (t: Throwable) {
-                        Log.e(TAG, "Error injecting CodexMorphe bundle into $packageName", t)
+                        Log.e(TAG, "Failed injecting CodexMorphe into $packageName: ${t.message}", t)
                     }
                 }
                 chain.proceed()
             }
         } else {
-            Log.e(TAG, "Could not find onCreate on $appClass for $packageName")
+            Log.w(TAG, "Application.onCreate not found for $appClassName in $packageName")
         }
     }
 }

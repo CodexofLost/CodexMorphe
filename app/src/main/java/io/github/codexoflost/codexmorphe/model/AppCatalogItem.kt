@@ -14,5 +14,7 @@ data class AppCatalogItem(
     val activeProvider: ProviderEntry? = null,
     val availableProviders: List<ProviderEntry> = emptyList(),
     val isDownloaded: Boolean = false,
-    val downloadedFileSizeBytes: Long = 0L
+    val downloadedFileSizeBytes: Long = 0L,
+    val hasUpdate: Boolean = false,
+    val localSha256: String? = null
 )

@@ -95,4 +95,8 @@ synced_commit: 60e907f
 * **TRAP:** Third-party untrusted app SELinux sandbox blocks direct filesystem reads of `/data/adb/...`.
   * **FIX:** Never probe `/data/adb/` directly from the hooked process. Always query available bundles via LibXposed API 102 `listRemoteFiles()` and stream them via `openRemoteFile()`, routing through LSPosed daemon's privileged IPC bridge.
 * **TRAP:** Hardcoding entrypoints to official YouTube AddOnApi breaks community patch authors (`hushgram`, `piko`, etc.).
-  * **FIX:** Support multi-author discovery in `DexKitHookDispatcher`: invoke both `AddOnApi.initialize(app)` and `SettingsEntry.onApplicationCreate(app)`, and initialize `setContext(app)` across `app.hushgram.*`, `app.piko.*`, and `app.morphe.*` packages.
+  * **FIX:** Support multi-author discovery and dynamic `manifest.entrypoints` in `DexKitHookDispatcher`: invoke both `AddOnApi.initialize(app)` and `SettingsEntry.onApplicationCreate(app)`, and initialize `setContext(app)` across `app.hushgram.*`, `app.piko.*`, and `app.morphe.*` packages.
+* **TRAP:** Intercepting Activity lifecycle hooks (`GoogleApiActivity.onCreate`) via `METHOD_REPLACE` without calling `super.onCreate` crashes Android with `SuperNotCalledException`.
+  * **FIX:** Always classify lifecycle injection methods as `METHOD_AFTER` in the transpiler and dispatcher so `chain.proceed()` runs first before initializing settings UI.
+* **TRAP:** Force-updating bundle releases changes SHA-256 checksums, causing stale local cache conflicts.
+  * **FIX:** `BundleDownloader.isBundleUpToDate()` compares local SHA-256 against remote manifest hashes, enabling the UI to surface "Update Available" badges and atomic replacements via `.tmp` staging files.

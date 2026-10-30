@@ -101,6 +101,12 @@ fun AppDashboardScreen(
             val isDownloaded = bundleFile?.exists() == true
             val downloadedSize = bundleFile?.length() ?: 0L
 
+            val isUpToDate = if (isDownloaded && activeProvider != null) {
+                downloader.isBundleUpToDate(bundleFile!!, activeProvider.sha256)
+            } else false
+            val hasUpdate = isDownloaded && !isUpToDate
+            val localSha256 = if (isDownloaded) downloader.computeSha256(bundleFile!!) else null
+
             val isVersionSupported = if (isInstalled && activeProvider != null) {
                 when (VersionValidator.validate(context, pkg, activeProvider.targetVersions)) {
                     is VersionStatus.Mismatch -> false
@@ -120,7 +126,9 @@ fun AppDashboardScreen(
                 activeProvider = activeProvider,
                 availableProviders = providers,
                 isDownloaded = isDownloaded,
-                downloadedFileSizeBytes = downloadedSize
+                downloadedFileSizeBytes = downloadedSize,
+                hasUpdate = hasUpdate,
+                localSha256 = localSha256
             )
         }
     }
@@ -185,11 +193,20 @@ fun AppDashboardScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { loadManifest(true) }, enabled = !isLoadingManifest) {
+                    FilledTonalButton(
+                        onClick = {
+                            Toast.makeText(context, "Fetching latest bundles from GitHub...", Toast.LENGTH_SHORT).show()
+                            loadManifest(true)
+                        },
+                        enabled = !isLoadingManifest,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
                         if (isLoadingManifest) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                            Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Fetch Latest Bundles", style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
@@ -263,6 +280,47 @@ fun AppDashboardScreen(
                     onClick = { selectedTab = 1 },
                     text = { Text("All Catalogs (${catalog.size})") }
                 )
+            }
+
+            // Pending Updates Banner
+            val pendingUpdates = catalog.filter { it.isInstalled && it.hasUpdate && it.activeProvider != null }
+            if (pendingUpdates.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "${pendingUpdates.size} Bundle Update(s) Available",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                            Text(
+                                "Fresh patch recipes compiled from latest releases.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                pendingUpdates.forEach { item ->
+                                    item.activeProvider?.let { triggerDownload(item, it) }
+                                }
+                            }
+                        ) {
+                            Text("Update All")
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -373,6 +431,22 @@ fun AppDashboardScreen(
                                     )
                                 }
 
+                                // Update Available Badge
+                                if (item.hasUpdate) {
+                                    SuggestionChip(
+                                        onClick = {
+                                            if (item.activeProvider != null) {
+                                                triggerDownload(item, item.activeProvider)
+                                            }
+                                        },
+                                        label = { Text("Update Available", style = MaterialTheme.typography.labelSmall) },
+                                        colors = SuggestionChipDefaults.suggestionChipColors(
+                                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                            labelColor = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                    )
+                                }
+
                                 // Download Status Badge
                                 if (item.isDownloaded) {
                                     SuggestionChip(
@@ -408,20 +482,45 @@ fun AppDashboardScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 if (item.isDownloaded && item.activeProvider != null) {
-                                    Button(
-                                        onClick = {
-                                            onNavigateToPatches(
-                                                item.packageName,
-                                                item.displayName,
-                                                item.activeProvider.name.ifBlank { item.activeProvider.author },
-                                                item.activeProvider.patches
-                                            )
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Configure Patches")
+                                    if (item.hasUpdate) {
+                                        Button(
+                                            onClick = { triggerDownload(item, item.activeProvider) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Update Bundle")
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                onNavigateToPatches(
+                                                    item.packageName,
+                                                    item.displayName,
+                                                    item.activeProvider.name.ifBlank { item.activeProvider.author },
+                                                    item.activeProvider.patches
+                                                )
+                                            },
+                                            modifier = Modifier.weight(0.9f)
+                                        ) {
+                                            Text("Configure")
+                                        }
+                                    } else {
+                                        Button(
+                                            onClick = {
+                                                onNavigateToPatches(
+                                                    item.packageName,
+                                                    item.displayName,
+                                                    item.activeProvider.name.ifBlank { item.activeProvider.author },
+                                                    item.activeProvider.patches
+                                                )
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Configure Patches")
+                                        }
                                     }
 
                                     if (item.availableProviders.size > 1) {
