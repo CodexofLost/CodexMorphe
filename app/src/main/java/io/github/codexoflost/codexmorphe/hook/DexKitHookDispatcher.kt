@@ -301,11 +301,18 @@ class DexKitHookDispatcher(
             xposed.hook(executable).intercept { chain ->
                 when (hook.action) {
                     "CONSTANT_REPLACE" -> {
+                        val returnType = (executable as? Method)?.returnType
                         when (val v = hook.constantVal) {
-                            null, "void" -> null
-                            is Boolean -> v
-                            is Number -> v
-                            else -> v.toString()
+                            null, "void" -> {
+                                if (returnType == java.lang.Void.TYPE) null else chain.proceed()
+                            }
+                            is Boolean -> {
+                                if (returnType == java.lang.Boolean.TYPE || returnType == java.lang.Boolean::class.java) v else chain.proceed()
+                            }
+                            is Number -> {
+                                if (returnType != null && (returnType.isPrimitive || Number::class.java.isAssignableFrom(returnType))) v else chain.proceed()
+                            }
+                            else -> chain.proceed()
                         }
                     }
 
@@ -313,7 +320,14 @@ class DexKitHookDispatcher(
                         if (extClass != null && extMethod != null) {
                             val shouldSuppress = BundleBridge.callStaticBoolean(extClass, extMethod, false)
                             if (shouldSuppress) {
-                                null // Early return, suppressing target execution
+                                val returnType = (executable as? Method)?.returnType
+                                when (returnType) {
+                                    java.lang.Void.TYPE -> null
+                                    java.lang.Boolean.TYPE -> false
+                                    java.lang.Integer.TYPE -> 0
+                                    java.lang.Long.TYPE -> 0L
+                                    else -> null
+                                }
                             } else {
                                 chain.proceed()
                             }

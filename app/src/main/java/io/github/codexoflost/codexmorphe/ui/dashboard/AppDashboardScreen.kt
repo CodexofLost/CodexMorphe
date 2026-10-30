@@ -147,6 +147,45 @@ fun AppDashboardScreen(
         }
     }
 
+    fun triggerDownload(item: AppCatalogItem, provider: ProviderEntry) {
+        coroutineScope.launch {
+            prefManager.setActiveAuthor(item.packageName, provider.id)
+            downloader.downloadBundle(item.packageName, provider.assetName, provider.sha256, provider.downloadUrl).collect { state ->
+                activeDownloads[item.packageName] = state
+                if (state is DownloadState.Success) {
+                    Toast.makeText(context, "Bundle for ${item.displayName} synced successfully!", Toast.LENGTH_SHORT).show()
+                } else if (state is DownloadState.Error) {
+                    Toast.makeText(context, "Download failed for ${item.displayName}: ${state.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    // Comprehensive fetch: updates catalog and auto-downloads missing/updated bundles for installed apps
+    fun fetchLatestAndSyncBundles() {
+        coroutineScope.launch {
+            isLoadingManifest = true
+            ScopeManager.refreshScope()
+            manifestRepo.getManifest(forceRefresh = true).onSuccess { freshManifest ->
+                manifest = freshManifest
+                val updatedCatalog = buildCatalogList(freshManifest)
+                val installedItemsToDownload = updatedCatalog.filter { it.isInstalled && (it.hasUpdate || !it.isDownloaded) }
+                if (installedItemsToDownload.isEmpty()) {
+                    Toast.makeText(context, "Manifest refreshed! All installed app bundles are up to date.", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Updating ${installedItemsToDownload.size} installed bundle(s)...", Toast.LENGTH_SHORT).show()
+                    installedItemsToDownload.forEach { item ->
+                        val provider = item.activeProvider ?: return@forEach
+                        triggerDownload(item, provider)
+                    }
+                }
+            }.onFailure {
+                Toast.makeText(context, "Failed fetching manifest: ${it.message}", Toast.LENGTH_LONG).show()
+            }
+            isLoadingManifest = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         loadManifest(false)
     }
@@ -162,20 +201,6 @@ fun AppDashboardScreen(
                     item.displayName.contains(searchQuery, ignoreCase = true) ||
                     item.packageName.contains(searchQuery, ignoreCase = true)
             matchesTab && matchesSearch
-        }
-    }
-
-    fun triggerDownload(item: AppCatalogItem, provider: ProviderEntry) {
-        coroutineScope.launch {
-            prefManager.setActiveAuthor(item.packageName, provider.id)
-            downloader.downloadBundle(item.packageName, provider.assetName, provider.sha256).collect { state ->
-                activeDownloads[item.packageName] = state
-                if (state is DownloadState.Success) {
-                    Toast.makeText(context, "Bundle downloaded successfully!", Toast.LENGTH_SHORT).show()
-                } else if (state is DownloadState.Error) {
-                    Toast.makeText(context, "Download failed: ${state.message}", Toast.LENGTH_LONG).show()
-                }
-            }
         }
     }
 
@@ -195,8 +220,7 @@ fun AppDashboardScreen(
                 actions = {
                     FilledTonalButton(
                         onClick = {
-                            Toast.makeText(context, "Fetching latest bundles from GitHub...", Toast.LENGTH_SHORT).show()
-                            loadManifest(true)
+                            fetchLatestAndSyncBundles()
                         },
                         enabled = !isLoadingManifest,
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)

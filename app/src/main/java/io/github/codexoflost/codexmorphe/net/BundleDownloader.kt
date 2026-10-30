@@ -29,8 +29,11 @@ class BundleDownloader(private val context: Context) {
     }
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
         .build()
 
     val bundlesDir: File
@@ -60,16 +63,23 @@ class BundleDownloader(private val context: Context) {
     fun downloadBundle(
         packageName: String,
         assetName: String,
-        expectedSha256: String
+        expectedSha256: String,
+        explicitDownloadUrl: String? = null
     ): Flow<DownloadState> = flow {
-        val downloadUrl = "$BASE_DOWNLOAD_URL$assetName"
+        val rawUrl = explicitDownloadUrl?.takeIf { it.isNotBlank() } ?: "$BASE_DOWNLOAD_URL$assetName"
+        val downloadUrl = rawUrl.replace("CodexMorphe/codexmorphe-builder", "CodexofLost/codexmorphe-builder")
         Log.i(TAG, "Starting download: $downloadUrl")
 
         val tempFile = File(bundlesDir, "$assetName.tmp")
         val destinationFile = File(bundlesDir, assetName)
 
         try {
-            val request = Request.Builder().url(downloadUrl).build()
+            val request = Request.Builder()
+                .url(downloadUrl)
+                .header("User-Agent", "CodexMorphe/1.0 (Android)")
+                .header("Accept", "application/octet-stream, application/vnd.android.package-archive, */*")
+                .build()
+
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     emit(DownloadState.Error("HTTP ${response.code}: Download failed"))
@@ -102,9 +112,22 @@ class BundleDownloader(private val context: Context) {
                     }
                 }
 
-                // Verify SHA-256
+                // Verify SHA-256 with rolling build reconciliation
                 val calculatedSha256 = digest.digest().joinToString("") { "%02x".format(it) }
-                if (!calculatedSha256.equals(expectedSha256, ignoreCase = true)) {
+                var hashValid = expectedSha256.isBlank() || calculatedSha256.equals(expectedSha256, ignoreCase = true)
+
+                if (!hashValid) {
+                    // Check against live rolling manifest before rejecting
+                    Log.w(TAG, "Hash mismatch with cached value ($expectedSha256 vs $calculatedSha256), checking live manifest...")
+                    val liveManifest = ManifestRepository(context).getManifest(forceRefresh = true).getOrNull()
+                    val liveProvider = liveManifest?.applications?.get(packageName)?.providers?.values?.find { it.assetName == assetName }
+                    if (liveProvider != null && liveProvider.sha256.equals(calculatedSha256, ignoreCase = true)) {
+                        Log.i(TAG, "SHA-256 verified against live rolling release manifest!")
+                        hashValid = true
+                    }
+                }
+
+                if (!hashValid) {
                     tempFile.delete()
                     Log.e(TAG, "SHA-256 mismatch! Expected: $expectedSha256, got: $calculatedSha256")
                     emit(DownloadState.Error("SHA-256 verification failed"))
@@ -139,6 +162,7 @@ class BundleDownloader(private val context: Context) {
         val service = io.github.codexoflost.codexmorphe.CodexMorpheApp.mService
         if (service != null) {
             runCatching {
+                service.deleteRemoteFile(assetName)
                 service.openRemoteFile(assetName)?.use { pfd ->
                     java.io.FileOutputStream(pfd.fileDescriptor).use { outStream ->
                         localFile.inputStream().use { inStream ->

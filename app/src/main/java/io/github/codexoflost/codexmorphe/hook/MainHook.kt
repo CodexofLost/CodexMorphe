@@ -86,8 +86,11 @@ class MainHook : XposedModule() {
         if (onCreateMethod != null) {
             hook(onCreateMethod).intercept { chain ->
                 val app = chain.thisObject as? Application
+                // 1. Let target Application.onCreate finish so application singletons and host DI initialize safely
+                val origResult = chain.proceed()
+
                 if (app != null) {
-                    Log.d(TAG, "Target Application.onCreate reached for $packageName")
+                    Log.d(TAG, "Target Application.onCreate completed for $packageName; injecting CodexMorphe...")
                     try {
                         // Inject resources
                         BundleResourceInjector.inject(pfd, app)
@@ -106,7 +109,7 @@ class MainHook : XposedModule() {
                         Log.e(TAG, "Failed injecting CodexMorphe into $packageName: ${t.message}", t)
                     }
                 }
-                chain.proceed()
+                origResult
             }
         } else {
             Log.w(TAG, "Application.onCreate not found for $appClassName in $packageName")

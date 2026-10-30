@@ -20,8 +20,11 @@ class ManifestRepository(private val context: Context) {
     }
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(25, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
         .build()
 
     private val gson = Gson()
@@ -31,30 +34,49 @@ class ManifestRepository(private val context: Context) {
     suspend fun getManifest(forceRefresh: Boolean = false): Result<BundleManifest> =
         withContext(Dispatchers.IO) {
             if (!forceRefresh && cacheFile.exists()) {
-                runCatching {
-                    val cachedJson = cacheFile.readText()
-                    val manifest = gson.fromJson(cachedJson, BundleManifest::class.java)
-                    if (manifest != null && manifest.applications.isNotEmpty()) {
-                        Log.d(TAG, "Loaded manifest from local cache (${manifest.totalBundles} bundles)")
-                        return@withContext Result.success(manifest)
-                    }
-                }
+                val cached = loadFromCache()
+                if (cached != null) return@withContext Result.success(cached)
             }
 
-            // Fetch remote manifest
-            runCatching {
-                val request = Request.Builder().url(CANONICAL_MANIFEST_URL).build()
+            // Fetch remote manifest from canonical GitHub rolling release
+            val remoteResult = runCatching {
+                val request = Request.Builder()
+                    .url(CANONICAL_MANIFEST_URL)
+                    .header("User-Agent", "CodexMorphe/1.0 (Android)")
+                    .header("Accept", "application/json, */*")
+                    .build()
+
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
-                        throw IllegalStateException("HTTP ${response.code}: Failed to fetch manifest")
+                        throw IllegalStateException("HTTP ${response.code}: Failed to fetch manifest from GitHub")
                     }
-                    val json = response.body?.string() ?: throw IllegalStateException("Empty body")
+                    val json = response.body?.string() ?: throw IllegalStateException("Empty body from manifest URL")
                     val manifest = gson.fromJson(json, BundleManifest::class.java)
+                        ?: throw IllegalStateException("Malformed JSON in bundle manifest")
+
                     // Persist to local cache
                     cacheFile.writeText(json)
-                    Log.i(TAG, "Fetched fresh manifest: ${manifest.totalBundles} bundles")
+                    Log.i(TAG, "Fetched fresh manifest: ${manifest.totalBundles} bundles across ${manifest.applications.size} apps")
                     manifest
                 }
             }
+
+            // If remote fetch succeeded, return it; otherwise fallback to cached version if available
+            remoteResult.recoverCatching { error ->
+                Log.w(TAG, "Remote manifest fetch failed: ${error.message}, falling back to cache")
+                loadFromCache() ?: throw error
+            }
         }
+
+    private fun loadFromCache(): BundleManifest? {
+        if (!cacheFile.exists()) return null
+        return runCatching {
+            val cachedJson = cacheFile.readText()
+            val manifest = gson.fromJson(cachedJson, BundleManifest::class.java)
+            if (manifest != null && manifest.applications.isNotEmpty()) {
+                Log.d(TAG, "Loaded manifest from local cache (${manifest.totalBundles} bundles)")
+                manifest
+            } else null
+        }.getOrNull()
+    }
 }
