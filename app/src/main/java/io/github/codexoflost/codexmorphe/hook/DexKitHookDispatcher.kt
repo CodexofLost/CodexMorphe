@@ -40,52 +40,42 @@ class DexKitHookDispatcher(
     fun dispatch() {
         Log.i(TAG, "Initializing CodexMorphe Dynamic Engine for ${app.packageName}")
 
-        // 1. Initialize Bundle Bridge and multi-author context
+        // 1. Initialize Bundle Bridge
         BundleBridge.init(bundleLoader)
-        BundleBridge.initializeExtensionContext(app)
-        initializeAuthorSettingsEntries()
 
         // 2. Read hooks.json from the bundle APK stream
         val manifest = extractHookManifest()
-        if (manifest == null || manifest.hooks.isEmpty()) {
-            Log.i(TAG, "No dynamic hook recipes in bundle for ${app.packageName}; context initializers only.")
-            return
-        }
+        val entrypoints = manifest?.entrypoints.orEmpty()
+        val resourceFallbacks = manifest?.resourceFallbacks.orEmpty()
 
-        // 2b. Dispatch dynamic extension entrypoints from manifest
-        if (manifest.entrypoints.isNotEmpty()) {
-            for (ep in manifest.entrypoints) {
-                val parts = ep.split("#")
-                if (parts.size == 2) {
-                    val cls = parts[0].trim()
-                    val mtd = parts[1].trim()
-                    runCatching {
-                        val res = BundleBridge.callStatic(cls, mtd, app)
-                        if (res != null || BundleBridge.loadClass(cls) != null) {
-                            Log.d(TAG, "Dispatched manifest entrypoint: $ep")
-                        }
+        // 3. Initialize extension context & resource lookups dynamically
+        BundleBridge.initializeExtensionContext(app, entrypoints, resourceFallbacks)
+
+        // 4. Dispatch dynamic extension entrypoints from manifest (SettingsEntry, AddOnApi, etc.)
+        for (ep in entrypoints) {
+            val parts = ep.split("#")
+            if (parts.size == 2) {
+                val cls = parts[0].trim()
+                val mtd = parts[1].trim()
+                if (mtd == "setContext") continue // Already dispatched by BundleBridge
+                runCatching {
+                    val res = BundleBridge.callStatic(cls, mtd, app)
+                    if (res != null || BundleBridge.loadClass(cls) != null) {
+                        Log.d(TAG, "Dispatched manifest entrypoint: $ep")
                     }
                 }
             }
         }
 
+        if (manifest == null || manifest.hooks.isEmpty()) {
+            Log.i(TAG, "No dynamic hook recipes in bundle for ${app.packageName}; context initializers only.")
+            return
+        }
+
         Log.i(TAG, "Loaded ${manifest.hooks.size} dynamic hook recipes from bundle for ${app.packageName}")
 
-        // 3. Initialize DexKit native engine with fallback
-        ensureDexKitLoaded()
-
-        val bridge = runCatching {
-            DexKitBridge.create(app.applicationInfo.sourceDir)
-        }.onFailure {
-            Log.e(TAG, "Failed to create DexKitBridge for ${app.applicationInfo.sourceDir}: ${it.message}")
-        }.getOrNull() ?: return
-
-        try {
-            // 4. Bind hooks dynamically using pure LibXposed API 102
-            bindDynamicHooks(bridge, manifest.hooks)
-        } finally {
-            runCatching { bridge.close() }
-        }
+        // 5. Bind hooks dynamically using signature cache + DexKit fallback
+        bindDynamicHooksWithCache(manifest.hooks)
     }
 
     private val LIFECYCLE_METHODS = setOf(
@@ -130,66 +120,158 @@ class DexKitHookDispatcher(
         }
     }
 
-    private fun initializeAuthorSettingsEntries() {
-        val entryCandidates = listOf(
-            "app.hushgram.extension.instagram.settings.SettingsEntry" to "onApplicationCreate",
-            "app.piko.extension.instagram.settings.SettingsEntry" to "onApplicationCreate",
-            "app.piko.extension.twitter.settings.SettingsEntry" to "onApplicationCreate",
-            "app.morphe.extension.reddit.settings.SettingsEntry" to "onApplicationCreate",
-            "app.morphe.extension.youtube.addon.AddOnApi" to "initialize",
-            "app.morphe.extension.music.addon.AddOnApi" to "initialize"
-        )
+    private fun bindDynamicHooksWithCache(hooks: List<HookDefinition>) {
+        val versionCode = runCatching {
+            val pi = app.packageManager.getPackageInfo(app.packageName, 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pi.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                pi.versionCode.toLong()
+            }
+        }.getOrDefault(0L)
 
-        for ((clsName, method) in entryCandidates) {
-            runCatching {
-                val res = BundleBridge.callStatic(clsName, method, app)
-                if (res != null || BundleBridge.loadClass(clsName) != null) {
-                    Log.d(TAG, "Invoked entrypoint: $clsName#$method")
+        val cachePrefs = app.getSharedPreferences("dexkit_cache_${app.packageName}", Context.MODE_PRIVATE)
+        val cachedVersion = cachePrefs.getLong("cached_version_code", -1L)
+        if (cachedVersion != versionCode) {
+            Log.i(TAG, "Target app version changed ($cachedVersion -> $versionCode); clearing DexKit cache.")
+            cachePrefs.edit().clear().putLong("cached_version_code", versionCode).apply()
+        }
+
+        var bridge: DexKitBridge? = null
+        var appliedCount = 0
+        var cachedCount = 0
+
+        try {
+            for (hook in hooks) {
+                val isEnabled = prefs.getBoolean(hook.name.ifEmpty { hook.id }, true)
+                if (!isEnabled) {
+                    Log.d(TAG, "Hook [${hook.name}] is disabled by user settings")
+                    continue
+                }
+
+                // 1. Check persistent signature cache
+                val cachedSigs = cachePrefs.getString("hook_${hook.id}", null)
+                if (!cachedSigs.isNullOrEmpty()) {
+                    val resolvedMethods = resolveCachedExecutables(cachedSigs)
+                    if (resolvedMethods.isNotEmpty()) {
+                        for (exec in resolvedMethods) {
+                            installInterceptor(exec, hook)
+                            appliedCount++
+                        }
+                        cachedCount++
+                        continue
+                    }
+                }
+
+                // 2. Cache miss: Lazy initialize DexKit bridge
+                if (bridge == null) {
+                    ensureDexKitLoaded()
+                    bridge = runCatching {
+                        DexKitBridge.create(app.applicationInfo.sourceDir)
+                    }.onFailure {
+                        Log.e(TAG, "Failed to create DexKitBridge for ${app.applicationInfo.sourceDir}: ${it.message}")
+                    }.getOrNull()
+                }
+
+                if (bridge == null) continue
+
+                val methods = queryMethods(bridge, hook)
+                if (methods.isEmpty()) {
+                    Log.w(TAG, "No match found for hook: ${hook.id} (${hook.name})")
+                    continue
+                }
+
+                val sigs = mutableListOf<String>()
+                for (methodData in methods) {
+                    val resolvedMethod = resolveExecutable(methodData)
+                    if (resolvedMethod != null) {
+                        installInterceptor(resolvedMethod, hook)
+                        appliedCount++
+                        sigs.add("${methodData.className}#${methodData.name}#${methodData.paramTypeNames.joinToString(",")}#${methodData.isConstructor}")
+                    }
+                }
+
+                if (sigs.isNotEmpty()) {
+                    cachePrefs.edit().putString("hook_${hook.id}", sigs.joinToString("|")).apply()
                 }
             }
+        } finally {
+            bridge?.let { runCatching { it.close() } }
         }
+
+        Log.i(TAG, "Successfully bound $appliedCount dynamic interceptor(s) for ${app.packageName} ($cachedCount resolved via fast signature cache)")
     }
 
-    private fun bindDynamicHooks(bridge: DexKitBridge, hooks: List<HookDefinition>) {
-        var appliedCount = 0
+    private fun resolveCachedExecutables(cachedSigs: String): List<Executable> {
+        val list = mutableListOf<Executable>()
+        for (item in cachedSigs.split("|")) {
+            val parts = item.split("#")
+            if (parts.size != 4) return emptyList()
+            val className = parts[0]
+            val methodName = parts[1]
+            val paramStr = parts[2]
+            val isConstructor = parts[3].toBoolean()
 
-        for (hook in hooks) {
-            val isEnabled = prefs.getBoolean(hook.name.ifEmpty { hook.id }, true)
-            if (!isEnabled) {
-                Log.d(TAG, "Hook [${hook.name}] is disabled by user settings")
-                continue
-            }
+            val exec = runCatching {
+                val clz = hostLoader.loadClass(className)
+                val paramClasses = if (paramStr.isEmpty()) {
+                    emptyArray()
+                } else {
+                    paramStr.split(",").map { loadClassOrPrimitive(it, hostLoader) }.toTypedArray()
+                }
 
-            val methods = queryMethods(bridge, hook)
-            if (methods.isEmpty()) {
-                Log.w(TAG, "No match found for hook: ${hook.id} (${hook.name})")
-                continue
-            }
+                if (isConstructor) {
+                    XpReflect.findConstructorExactIfExists(clz, *paramClasses)
+                } else {
+                    XpReflect.findMethodExactIfExists(clz, methodName, *paramClasses)
+                }
+            }.getOrNull() ?: return emptyList()
 
-            for (methodData in methods) {
-                val resolvedMethod = resolveExecutable(methodData)
-                if (resolvedMethod != null) {
-                    installInterceptor(resolvedMethod, hook)
-                    appliedCount++
+            list.add(exec)
+        }
+        return list
+    }
+
+    private fun loadClassOrPrimitive(name: String, loader: ClassLoader): Class<*> {
+        return when (name) {
+            "void" -> java.lang.Void.TYPE
+            "boolean" -> java.lang.Boolean.TYPE
+            "int" -> java.lang.Integer.TYPE
+            "long" -> java.lang.Long.TYPE
+            "float" -> java.lang.Float.TYPE
+            "double" -> java.lang.Double.TYPE
+            "short" -> java.lang.Short.TYPE
+            "byte" -> java.lang.Byte.TYPE
+            "char" -> java.lang.Character.TYPE
+            else -> {
+                if (name.endsWith("[]")) {
+                    val element = loadClassOrPrimitive(name.removeSuffix("[]"), loader)
+                    java.lang.reflect.Array.newInstance(element, 0).javaClass
+                } else {
+                    loader.loadClass(name)
                 }
             }
         }
-
-        Log.i(TAG, "Successfully bound $appliedCount dynamic interceptor(s) for ${app.packageName}")
     }
 
     private fun queryMethods(bridge: DexKitBridge, hook: HookDefinition): List<MethodData> {
         val fp = hook.fingerprint
 
         // Discriminator check: prevent overly broad queries from matching arbitrary methods
-        val hasDiscriminator = !fp.declaringClass.isNullOrEmpty() ||
-                !fp.methodName.isNullOrEmpty() ||
+        val hasDiscriminator = !fp.methodName.isNullOrEmpty() ||
                 fp.strings.isNotEmpty() ||
-                fp.paramTypes.isNotEmpty() ||
-                (fp.paramCount != null && fp.paramCount > 0) ||
-                fp.literal != null
+                fp.literal != null ||
+                (fp.paramTypes.isNotEmpty() && !fp.declaringClass.isNullOrEmpty())
+
         if (!hasDiscriminator) {
-            Log.w(TAG, "Rejecting overly broad query without discriminator: ${hook.id}")
+            Log.w(TAG, "Rejecting overly broad/wildcard query without discriminator: ${hook.id} (class=${fp.declaringClass})")
+            return emptyList()
+        }
+
+        // Strict guard: If declaringClass is set, but methodName, strings, and literal are all missing: REJECT!
+        if (fp.methodName.isNullOrEmpty() && fp.strings.isEmpty() && fp.literal == null) {
+            Log.w(TAG, "Rejecting wildcard query matching entire class: ${hook.id} (${fp.declaringClass})")
             return emptyList()
         }
 
@@ -259,6 +341,11 @@ class DexKitHookDispatcher(
             }
         }
 
+        if (results.size > 1 && fp.methodName.isNullOrEmpty() && fp.strings.isEmpty()) {
+            Log.w(TAG, "Rejecting query that matched multiple methods (${results.size}) without method name: ${hook.id}")
+            return emptyList()
+        }
+
         if (results.size > 5 && fp.declaringClass.isNullOrEmpty() && fp.methodName.isNullOrEmpty()) {
             Log.w(TAG, "Rejecting query that matched too many methods (${results.size}) without class or method name: ${hook.id}")
             return emptyList()
@@ -324,7 +411,7 @@ class DexKitHookDispatcher(
             return
         }
 
-        val (extClass, extMethod) = parseExtensionCall(hook.extensionCall)
+        val (extClass, extMethod) = parseExtensionCall(hook)
 
         runCatching {
             xposed.hook(executable).intercept { chain ->
@@ -345,7 +432,7 @@ class DexKitHookDispatcher(
                         }
                     }
 
-                    "EARLY_RETURN_SUPPRESSOR" -> {
+                    "BEFORE", "EARLY_RETURN_SUPPRESSOR" -> {
                         if (executable.name in LIFECYCLE_METHODS) {
                             chain.proceed()
                         } else if (extClass != null && extMethod != null) {
@@ -424,7 +511,7 @@ class DexKitHookDispatcher(
                         }
                     }
 
-                    "METHOD_REPLACE" -> {
+                    "REPLACE", "METHOD_REPLACE" -> {
                         if (executable.name in LIFECYCLE_METHODS) {
                             chain.proceed()
                         } else if (extClass != null && extMethod != null) {
@@ -439,7 +526,7 @@ class DexKitHookDispatcher(
                         }
                     }
 
-                    "METHOD_AFTER" -> {
+                    "AFTER", "METHOD_AFTER" -> {
                         val origResult = chain.proceed()
                         if (extClass != null && extMethod != null) {
                             runCatching {
@@ -448,7 +535,7 @@ class DexKitHookDispatcher(
                                 argsList.addAll(chain.args)
                                 BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
                             }.onFailure { e ->
-                                Log.w(TAG, "Error in METHOD_AFTER hook for ${hook.id}: ${e.message}")
+                                Log.w(TAG, "Error in AFTER hook for ${hook.id}: ${e.message}")
                             }
                         }
                         origResult
@@ -461,6 +548,13 @@ class DexKitHookDispatcher(
         }.onFailure { e ->
             Log.e(TAG, "Failed to hook $executable for patch ${hook.id}: ${e.message}")
         }
+    }
+
+    private fun parseExtensionCall(hook: HookDefinition): Pair<String?, String?> {
+        if (!hook.extensionClass.isNullOrEmpty() && !hook.extensionMethod.isNullOrEmpty()) {
+            return Pair(hook.extensionClass.removePrefix("L").removeSuffix(";").replace("/", "."), hook.extensionMethod)
+        }
+        return parseExtensionCall(hook.extensionCall)
     }
 
     private fun parseExtensionCall(desc: String?): Pair<String?, String?> {

@@ -12,6 +12,8 @@ data class HookRecipeManifest(
     val packageName: String = "",
     @SerializedName("entrypoints")
     val entrypoints: List<String> = emptyList(),
+    @SerializedName("resource_fallbacks")
+    val resourceFallbacks: List<String> = emptyList(),
     @SerializedName("hooks")
     val hooks: List<HookDefinition> = emptyList()
 )
@@ -28,6 +30,10 @@ data class HookDefinition(
     val action: String = "METHOD_REPLACE", // CONSTANT_REPLACE, EARLY_RETURN_SUPPRESSOR, ARG_REWRITE, RETURN_TRANSFORM, METHOD_REPLACE
     @SerializedName("extension_call")
     val extensionCall: String? = null,
+    @SerializedName("extension_class")
+    val extensionClass: String? = null,
+    @SerializedName("extension_method")
+    val extensionMethod: String? = null,
     @SerializedName("constant_val")
     val constantVal: Any? = null,
     @SerializedName("arg_index")

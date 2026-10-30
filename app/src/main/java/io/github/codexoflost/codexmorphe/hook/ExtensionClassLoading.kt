@@ -22,9 +22,17 @@ import java.util.concurrent.ConcurrentHashMap
 object ExtensionClassLoading {
 
     private val viewConstructors = ConcurrentHashMap<String, Constructor<out View>>()
+    private val extensionClassCache = ConcurrentHashMap<String, Boolean>()
 
-    private fun isExtensionClass(name: String): Boolean {
-        return name.contains(".extension.") || name.startsWith("app.morphe.") || name.startsWith("app.hushgram.") || name.startsWith("app.piko.")
+    private fun isExtensionClass(name: String, bundleLoader: ClassLoader): Boolean {
+        if (name.contains(".extension.") || name.contains(".mpe.") || name.contains("extension")) {
+            return true
+        }
+        return extensionClassCache.getOrPut(name) {
+            runCatching {
+                bundleLoader.loadClass(name) != null
+            }.getOrDefault(false)
+        }
     }
 
     fun hook(module: XposedInterface, bundleLoader: ClassLoader) {
@@ -50,7 +58,7 @@ object ExtensionClassLoading {
             val offset = if (hasViewContext) 1 else 0
             val prefix = chain.args[offset + 1] as String?
             val name = prefix.orEmpty() + (chain.args[offset] as String)
-            if (!isExtensionClass(name)) {
+            if (!isExtensionClass(name, bundleLoader)) {
                 return@intercept chain.proceed()
             }
 
@@ -90,7 +98,7 @@ object ExtensionClassLoading {
             )
             module.hook(inflateFromClassMethod).intercept { chain ->
                 val name = chain.args[0] as String
-                if (!isExtensionClass(name)) {
+                if (!isExtensionClass(name, bundleLoader)) {
                     return@intercept chain.proceed()
                 }
                 try {
@@ -113,7 +121,7 @@ object ExtensionClassLoading {
             )
             module.hook(instantiateMethod).intercept { chain ->
                 val className = chain.args[1] as String
-                if (!className.startsWith("app.morphe.extension.")) {
+                if (!isExtensionClass(className, bundleLoader)) {
                     return@intercept chain.proceed()
                 }
                 val args = chain.args[2] as? Bundle

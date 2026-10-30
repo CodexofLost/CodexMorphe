@@ -155,20 +155,51 @@ object BundleBridge {
         return callStatic(className, methodName, *args) as? String ?: default
     }
 
-    fun initializeExtensionContext(context: Context) {
-        val utilsCandidates = listOf(
-            "app.morphe.extension.shared.Utils",
-            "app.hushgram.extension.shared.Utils",
-            "app.piko.extension.shared.Utils",
-            "app.rushiranpise.extension.shared.Utils",
-            "app.devanced.extension.shared.Utils",
-            "app.okish.extension.shared.Utils"
-        )
-        for (candidate in utilsCandidates) {
-            val res = callStatic(candidate, "setContext", context)
-            if (res != null || loadClass(candidate) != null) {
-                Log.i(TAG, "Initialized extension context via $candidate")
-                break
+    fun initializeExtensionContext(
+        context: Context,
+        entrypoints: List<String> = emptyList(),
+        resourceFallbacks: List<String> = emptyList()
+    ) {
+        val candidatePackages = mutableSetOf<String>()
+
+        // 1. Dispatch context to any Utils/setContext entrypoints dynamically discovered from the bundle
+        for (ep in entrypoints) {
+            val parts = ep.split("#")
+            if (parts.size == 2) {
+                val className = parts[0].trim()
+                val methodName = parts[1].trim()
+                val pkg = className.substringBeforeLast(".")
+                candidatePackages.add(pkg)
+
+                if (methodName == "setContext" || className.endsWith(".Utils")) {
+                    runCatching {
+                        val res = callStatic(className, "setContext", context)
+                        if (res != null || loadClass(className) != null) {
+                            Log.i(TAG, "Initialized extension context via $className#setContext")
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Initialize ResourceUtils.fallbackPackageName dynamically for layout/drawable lookups
+        val targets = mutableSetOf<String>()
+        targets.addAll(resourceFallbacks)
+        for (pkg in candidatePackages) {
+            targets.add("$pkg.ResourceUtils")
+            if (pkg.contains(".extension.")) {
+                val sharedPkg = pkg.substringBefore(".extension.") + ".extension.shared"
+                targets.add("$sharedPkg.ResourceUtils")
+            }
+        }
+
+        for (target in targets) {
+            val clazz = loadClass(target) ?: continue
+            runCatching {
+                val field = clazz.getDeclaredField("fallbackPackageName")
+                field.isAccessible = true
+                field.set(null, context.packageName)
+                Log.i(TAG, "Initialized $target.fallbackPackageName to ${context.packageName}")
             }
         }
     }
