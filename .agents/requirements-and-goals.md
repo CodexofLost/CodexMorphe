@@ -50,14 +50,18 @@ Resolve critical integration failures across the two-project framework:
   - [x] Commit builder changes & push to `origin/main` (commits `13a8f5c`, `583787d`, `088af56`)
   - [x] Trigger GitHub Actions `build-bundles.yml` (Run #41082257038 succeeded in 8m30s)
   - [ ] 🛑 **CRITICAL USER GATE**: User taps "Fetch / Update Bundles" in CodexMorphe to download new bundles locally
-- [ ] **Phase 3: Harden `CodexMorphe` Client Engine & Absolute Decoupling**
+- [x] **Phase 3: Harden `CodexMorphe` Client Engine & Absolute Decoupling**
   - [x] Remove all hardcoded author package names (`app.hushgram`, `app.piko`, etc.) across `BundleBridge.kt`, `DexKitHookDispatcher.kt`, and `ExtensionClassLoading.kt`
   - [x] Dynamic entrypoint and resource fallback resolution via `manifest.entrypoints` and `manifest.resourceFallbacks`
   - [x] Activity-level resource injection via `ActivityLifecycleCallbacks` (`onActivityCreated`, `onActivityResumed`)
   - [x] DexKit query guard & discriminator safety (reject unconstrained class matching)
   - [x] DexKit signature caching (`DexKitCacheBridge` / SharedPreferences keyed by package & `versionCode`)
-  - [ ] Prompt user for build choice (Local `fast-gradlew` vs Cloud CI/CD) and compile
+  - [x] On-Device compilation (`fast-gradlew assembleDebug` succeeded) and APK installed via ADB
 - [ ] **Phase 4: Verification & Live Diagnostics**
+  - [ ] 🛑 **CRITICAL USER GATE**: User taps "Fetch / Update Bundles" in CodexMorphe app
+  - [ ] Launch YouTube and Instagram
+  - [ ] Stream logs via `pidcat com.google.android.youtube` and `pidcat com.instagram.android`
+  - [ ] Confirm crash-free launch and Morphe modded UI inflation
   - [ ] Install updated `CodexMorphe` APK via `adb` or `rish`
   - [ ] Stream logs via `pidcat com.google.android.youtube` and `pidcat com.instagram.android`
   - [ ] Confirm crash-free launch and Morphe modded UI inflation
