@@ -36,7 +36,7 @@ object BundleClassLoader {
     }
 
     fun create(pfd: ParcelFileDescriptor, parent: ClassLoader): ClassLoader {
-        val dexBuffers = mutableListOf<ByteBuffer>()
+        val dexEntries = mutableListOf<Pair<String, ByteBuffer>>()
 
         runCatching {
             android.system.Os.lseek(pfd.fileDescriptor, 0, android.system.OsConstants.SEEK_SET)
@@ -50,17 +50,28 @@ object BundleClassLoader {
                     val buffer = ByteBuffer.allocateDirect(bytes.size)
                     buffer.put(bytes)
                     buffer.flip()
-                    dexBuffers.add(buffer)
+                    dexEntries.add(Pair(current.name, buffer))
                     Log.d(TAG, "Loaded DEX entry: ${current.name} (${bytes.size} bytes)")
                 }
             }
         }
 
-        if (dexBuffers.isEmpty()) {
+        if (dexEntries.isEmpty()) {
             throw IllegalStateException("No DEX bytecode containers found in bundle APK")
         }
 
-        Log.d(TAG, "Initializing InMemoryDexClassLoader with ${dexBuffers.size} DEX containers")
+        // Sort in canonical MultiDex order: classes.dex, classes2.dex, classes3.dex, etc.
+        dexEntries.sortBy { (name, _) ->
+            val base = name.substringAfterLast("/")
+            if (base == "classes.dex") {
+                1
+            } else {
+                base.removePrefix("classes").removeSuffix(".dex").toIntOrNull() ?: 999
+            }
+        }
+        val dexBuffers = dexEntries.map { it.second }
+
+        Log.d(TAG, "Initializing InMemoryDexClassLoader with ${dexBuffers.size} DEX containers in canonical MultiDex sequence")
         val parentWrapper = BundleParentClassLoader(parent)
         return InMemoryDexClassLoader(dexBuffers.toTypedArray(), parentWrapper)
     }

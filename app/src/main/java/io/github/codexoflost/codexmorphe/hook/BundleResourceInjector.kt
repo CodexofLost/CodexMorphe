@@ -60,14 +60,14 @@ object BundleResourceInjector {
                 runCatching {
                     context.resources.addLoaders(loader)
                     Log.d(TAG, "Attached cached ResourcesLoader to ${context.javaClass.simpleName}")
-                    return
                 }.onFailure { t ->
                     Log.w(TAG, "Failed to addLoaders to ${context.javaClass.simpleName}: ${t.message}")
                 }
             }
         }
 
-        // Fallback for API 28-29 or on loader failure
+        // Always also inject via AssetManager to guarantee raw assets/ (e.g. JSON animations, skins)
+        // are accessible to AssetManager.open(...) across all Android OEM versions
         injectViaAssetManager(pfd, context)
     }
 
