@@ -171,7 +171,7 @@ fun AppDashboardScreen(
                 val updatedCatalog = buildCatalogList(freshManifest)
                 val installedItemsToDownload = updatedCatalog.filter { it.isInstalled && (it.hasUpdate || !it.isDownloaded) }
                 if (installedItemsToDownload.isEmpty()) {
-                    Toast.makeText(context, "Manifest refreshed! All installed app bundles are up to date.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Manifest refreshed (${freshManifest.totalBundles} bundles across ${freshManifest.applications.size} apps)! All installed app bundles are up to date.", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(context, "Updating ${installedItemsToDownload.size} installed bundle(s)...", Toast.LENGTH_SHORT).show()
                     installedItemsToDownload.forEach { item ->

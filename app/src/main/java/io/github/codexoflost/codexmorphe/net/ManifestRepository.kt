@@ -54,6 +54,10 @@ class ManifestRepository(private val context: Context) {
                     val manifest = gson.fromJson(json, BundleManifest::class.java)
                         ?: throw IllegalStateException("Malformed JSON in bundle manifest")
 
+                    if (manifest.applications.isEmpty()) {
+                        throw IllegalStateException("Remote manifest returned empty application catalog")
+                    }
+
                     // Persist to local cache
                     cacheFile.writeText(json)
                     Log.i(TAG, "Fetched fresh manifest: ${manifest.totalBundles} bundles across ${manifest.applications.size} apps")
@@ -61,10 +65,10 @@ class ManifestRepository(private val context: Context) {
                 }
             }
 
-            // If remote fetch succeeded, return it; otherwise fallback to cached version if available
+            // If remote fetch succeeded, return it; otherwise fallback to cached version or bundled assets
             remoteResult.recoverCatching { error ->
-                Log.w(TAG, "Remote manifest fetch failed: ${error.message}, falling back to cache")
-                loadFromCache() ?: throw error
+                Log.w(TAG, "Remote manifest fetch failed: ${error.message}, falling back to cache or assets")
+                loadFromCache() ?: loadFromAssets() ?: throw error
             }
         }
 
@@ -76,7 +80,24 @@ class ManifestRepository(private val context: Context) {
             if (manifest != null && manifest.applications.isNotEmpty()) {
                 Log.d(TAG, "Loaded manifest from local cache (${manifest.totalBundles} bundles)")
                 manifest
-            } else null
+            } else {
+                Log.w(TAG, "Local cache manifest is empty or invalid; purging stale cache")
+                cacheFile.delete()
+                null
+            }
+        }.getOrNull()
+    }
+
+    private fun loadFromAssets(): BundleManifest? {
+        return runCatching {
+            context.assets.open("bundle-manifest.json").use { input ->
+                val json = input.bufferedReader().use { it.readText() }
+                val manifest = gson.fromJson(json, BundleManifest::class.java)
+                if (manifest != null && manifest.applications.isNotEmpty()) {
+                    Log.i(TAG, "Loaded fallback manifest from APK assets (${manifest.totalBundles} bundles across ${manifest.applications.size} apps)")
+                    manifest
+                } else null
+            }
         }.getOrNull()
     }
 }

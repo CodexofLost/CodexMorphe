@@ -1,5 +1,5 @@
 ---
-synced_commit: 1d9392f
+synced_commit: ba9038d
 ---
 
 # CodexMorphe Architecture & Context Blueprint
@@ -121,3 +121,5 @@ synced_commit: 1d9392f
   * **FIX:** `BundleBridge` checks `Modifier.isStatic(method.modifiers)`; if non-static, reflects the declared `INSTANCE` field and passes the singleton instance to `method.invoke(instance, *args)`.
 * **TRAP:** `ARG_REWRITE` hooks on instance or Litho component methods expecting `(thisObject, originalArg)` fail or rewrite incorrectly when only `originalArg` is passed to the extension.
   * **FIX:** `DexKitHookDispatcher` prepends `chain.thisObject` to rewrite arguments, verifies type compatibility via `isBoxedTypeOf`, and falls back to `chain.args`.
+* **TRAP:** Remote rolling release `bundle-manifest.json` overwritten by empty delta builds (`apps: {}`), causing client apps to overwrite their local cache and display an empty catalog.
+  * **FIX:** `ManifestRepository` enforces strict non-empty application catalog validation (`manifest.applications.isNotEmpty()`) before caching, auto-purges corrupted local caches, and falls back to bundled APK assets (`assets/bundle-manifest.json`), while CI/CD checks `APPS_COUNT > 0` before publishing.
