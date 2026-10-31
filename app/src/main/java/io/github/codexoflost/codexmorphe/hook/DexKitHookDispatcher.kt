@@ -180,9 +180,9 @@ class DexKitHookDispatcher(
 
         // Pass 1: Synchronous Fast Path (Cache hits + Direct reflection)
         for (hook in hooks) {
-            val isEnabled = prefs.getBoolean(hook.name.ifEmpty { hook.id }, true)
+            val isEnabled = isHookEnabled(hook)
             if (!isEnabled) {
-                Log.d(TAG, "Hook [${hook.name}] is disabled by user settings")
+                Log.d(TAG, "Hook [${hook.name.ifEmpty { hook.id }}] is disabled by user settings")
                 continue
             }
 
@@ -254,8 +254,11 @@ class DexKitHookDispatcher(
 
                 if (bridge == null) return@thread
 
-                for (hook in uncachedHooks) {
-                    val methods = queryMethods(bridge, hook)
+                val resolvedFingerprintClasses = java.util.concurrent.ConcurrentHashMap<String, String>()
+                val sortedHooks = uncachedHooks.sortedBy { if (it.fingerprint.parentFingerprint.isNullOrEmpty()) 0 else 1 }
+
+                for (hook in sortedHooks) {
+                    val methods = queryMethods(bridge, hook, resolvedFingerprintClasses)
                     if (methods.isEmpty()) {
                         Log.w(TAG, "No match found for hook: ${hook.id} (${hook.name})")
                         continue
@@ -268,6 +271,11 @@ class DexKitHookDispatcher(
                             installInterceptor(resolvedMethod, hook)
                             bgAppliedCount++
                             sigs.add("${methodData.className}#${methodData.name}#${methodData.paramTypeNames.joinToString(",")}#${methodData.isConstructor}")
+                            val fpClass = hook.fingerprint.fingerprintClass
+                            if (!fpClass.isNullOrEmpty()) {
+                                resolvedFingerprintClasses[fpClass] = methodData.className
+                                resolvedFingerprintClasses[fpClass.substringAfterLast(".")] = methodData.className
+                            }
                         }
                     }
 
@@ -385,30 +393,61 @@ class DexKitHookDispatcher(
         "onPause", "onStop", "onDestroy", "run", "toString", "equals", "hashCode", "close"
     )
 
-    private fun queryMethods(bridge: DexKitBridge, hook: HookDefinition): List<MethodData> {
+    private fun queryMethods(
+        bridge: DexKitBridge,
+        hook: HookDefinition,
+        resolvedFingerprintClasses: Map<String, String> = emptyMap()
+    ): List<MethodData> {
         val fp = hook.fingerprint
-        val hasClassDiscriminator = !fp.declaringClass.isNullOrEmpty() || !fp.declaringClassEndsWith.isNullOrEmpty()
+        val parentClass = if (!fp.parentFingerprint.isNullOrEmpty()) {
+            resolvedFingerprintClasses[fp.parentFingerprint]
+                ?: resolvedFingerprintClasses[fp.parentFingerprint.substringAfterLast(".")]
+                ?: fp.parentQuery?.let { pq ->
+                    val parentResults = queryMethods(bridge, hook.copy(id = "${hook.id}_parent", fingerprint = pq), resolvedFingerprintClasses)
+                    parentResults.firstOrNull()?.className?.also { cls ->
+                        if (resolvedFingerprintClasses is java.util.concurrent.ConcurrentMap) {
+                            resolvedFingerprintClasses[fp.parentFingerprint] = cls
+                            resolvedFingerprintClasses[fp.parentFingerprint.substringAfterLast(".")] = cls
+                        }
+                    }
+                }
+        } else null
+
+        val hasClassDiscriminator = !parentClass.isNullOrEmpty() || !fp.declaringClass.isNullOrEmpty() || !fp.declaringClassEndsWith.isNullOrEmpty()
         val hasValidMethodName = !fp.methodName.isNullOrEmpty()
         val hasStrings = fp.strings.isNotEmpty()
-        val hasLiteral = fp.literal != null
+
+        // Resolve runtime integer resource identifier if specified
+        val resolvedLiteral: Long? = if (!fp.resourceName.isNullOrEmpty()) {
+            val resType = fp.resourceType ?: "string"
+            val resId = runCatching {
+                app.resources.getIdentifier(fp.resourceName, resType, app.packageName)
+            }.getOrDefault(0)
+            if (resId != 0) resId.toLong() else fp.literal
+        } else {
+            fp.literal
+        }
+        val hasLiteral = resolvedLiteral != null
         val hasConcreteParam = fp.paramTypes.any { it != "L" && it.length > 5 && !it.startsWith("java.") && !it.startsWith("android.") }
 
-        // Strict invariant: Reject any unconstrained query that lacks a method name, strings, literal, and concrete params.
-        if (!hasValidMethodName && !hasStrings && !hasLiteral && !hasConcreteParam) {
-            Log.w(TAG, "Rejecting unconstrained query lacking method_name, strings, literal, and concrete params: ${hook.id}")
+        // Strict invariant: Reject any unconstrained query that lacks a method name, strings, literal, concrete params, and parentClass.
+        if (!hasValidMethodName && !hasStrings && !hasLiteral && !hasConcreteParam && !hasClassDiscriminator) {
+            Log.w(TAG, "Rejecting unconstrained query lacking method_name, strings, literal, concrete params, and parentClass: ${hook.id}")
             return emptyList()
         }
 
         // Strict guard: If declaringClass is set, but methodName, strings, literal, and concrete param are all missing: REJECT!
-        if (fp.methodName.isNullOrEmpty() && fp.strings.isEmpty() && fp.literal == null && !hasConcreteParam) {
-            Log.w(TAG, "Rejecting wildcard query matching entire class: ${hook.id} (${fp.declaringClass})")
+        if (fp.methodName.isNullOrEmpty() && fp.strings.isEmpty() && resolvedLiteral == null && !hasConcreteParam) {
+            Log.w(TAG, "Rejecting wildcard query matching entire class: ${hook.id} (${parentClass ?: fp.declaringClass})")
             return emptyList()
         }
 
         val results = runCatching {
             bridge.findMethod {
                 matcher {
-                    if (!fp.declaringClass.isNullOrEmpty()) {
+                    if (!parentClass.isNullOrEmpty()) {
+                        declaredClass = parentClass
+                    } else if (!fp.declaringClass.isNullOrEmpty()) {
                         declaredClass = fp.declaringClass
                     } else if (!fp.declaringClassEndsWith.isNullOrEmpty()) {
                         declaredClass(fp.declaringClassEndsWith, StringMatchType.EndsWith)
@@ -429,8 +468,8 @@ class DexKitHookDispatcher(
                     if (fp.strings.isNotEmpty()) {
                         usingStrings(fp.strings)
                     }
-                    if (fp.literal != null && fp.strings.isEmpty()) {
-                        addUsingNumber(fp.literal)
+                    if (resolvedLiteral != null && fp.strings.isEmpty()) {
+                        addUsingNumber(resolvedLiteral)
                     }
                 }
             }
@@ -460,7 +499,9 @@ class DexKitHookDispatcher(
                 val fallbackResults = runCatching {
                     bridge.findMethod {
                         matcher {
-                            if (!fp.declaringClass.isNullOrEmpty()) {
+                            if (!parentClass.isNullOrEmpty()) {
+                                declaredClass = parentClass
+                            } else if (!fp.declaringClass.isNullOrEmpty()) {
                                 declaredClass = fp.declaringClass
                             } else if (!fp.declaringClassEndsWith.isNullOrEmpty()) {
                                 declaredClass(fp.declaringClassEndsWith, StringMatchType.EndsWith)
@@ -479,8 +520,8 @@ class DexKitHookDispatcher(
                                 paramCount(fp.paramCount)
                             }
                             usingStrings(listOf(str))
-                            if (fp.literal != null && fp.strings.isEmpty()) {
-                                addUsingNumber(fp.literal)
+                            if (resolvedLiteral != null && fp.strings.isEmpty()) {
+                                addUsingNumber(resolvedLiteral)
                             }
                         }
                     }
@@ -510,8 +551,9 @@ class DexKitHookDispatcher(
             }
         }
 
-        if (finalResults.size > 1 && !hasClassDiscriminator && fp.strings.isEmpty()) {
-            Log.w(TAG, "Rejecting query that matched multiple methods (${finalResults.size}) across classes without declaringClass or strings: ${hook.id} (method=${fp.methodName})")
+        val distinctClasses = finalResults.map { it.className }.distinct()
+        if (distinctClasses.size > 1 && !hasClassDiscriminator) {
+            Log.w(TAG, "Rejecting ambiguous query matching ${finalResults.size} methods across ${distinctClasses.size} distinct classes without declaringClass: ${hook.id} (${distinctClasses.joinToString()})")
             return emptyList()
         }
 
@@ -602,32 +644,36 @@ class DexKitHookDispatcher(
                     }
 
                     "BEFORE", "EARLY_RETURN_SUPPRESSOR" -> {
-                        if (executable.name in LIFECYCLE_METHODS) {
-                            chain.proceed()
-                        } else if (extClass != null && extMethod != null) {
-                            val argsList = mutableListOf<Any?>()
-                            if (chain.thisObject != null) argsList.add(chain.thisObject)
-                            argsList.addAll(chain.args)
-                            val shouldSuppress = runCatching {
-                                BundleBridge.callStaticBoolean(extClass, extMethod, false, *argsList.toTypedArray())
-                            }.getOrDefault(false)
+                        val argsList = mutableListOf<Any?>()
+                        if (chain.thisObject != null) argsList.add(chain.thisObject)
+                        argsList.addAll(chain.args)
 
-                            if (shouldSuppress) {
-                                val returnType = (executable as? Method)?.returnType
-                                when (returnType) {
-                                    java.lang.Void.TYPE -> null
-                                    java.lang.Boolean.TYPE -> false
-                                    java.lang.Integer.TYPE -> 0
-                                    java.lang.Long.TYPE -> 0L
-                                    java.lang.Float.TYPE -> 0.0f
-                                    java.lang.Double.TYPE -> 0.0
-                                    java.lang.Short.TYPE -> 0.toShort()
-                                    java.lang.Byte.TYPE -> 0.toByte()
-                                    java.lang.Character.TYPE -> '\u0000'
-                                    else -> null
-                                }
-                            } else {
-                                chain.proceed()
+                        val res = if (extClass != null && extMethod != null) {
+                            runCatching {
+                                BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                            }.getOrNull() ?: runCatching {
+                                if (chain.thisObject != null && chain.args.isNotEmpty()) {
+                                    BundleBridge.callStatic(extClass, extMethod, *chain.args.toTypedArray())
+                                } else null
+                            }.getOrNull()
+                        } else null
+
+                        if (executable.name in LIFECYCLE_METHODS) {
+                            // Lifecycle methods must never be suppressed
+                            chain.proceed()
+                        } else if (res is Boolean && res) {
+                            val returnType = (executable as? Method)?.returnType
+                            when (returnType) {
+                                java.lang.Void.TYPE -> null
+                                java.lang.Boolean.TYPE -> false
+                                java.lang.Integer.TYPE -> 0
+                                java.lang.Long.TYPE -> 0L
+                                java.lang.Float.TYPE -> 0.0f
+                                java.lang.Double.TYPE -> 0.0
+                                java.lang.Short.TYPE -> 0.toShort()
+                                java.lang.Byte.TYPE -> 0.toByte()
+                                java.lang.Character.TYPE -> '\u0000'
+                                else -> null
                             }
                         } else {
                             chain.proceed()
@@ -669,6 +715,8 @@ class DexKitHookDispatcher(
                             transformArgs.addAll(chain.args)
                             val transformed = runCatching {
                                 BundleBridge.callStatic(extClass, extMethod, *transformArgs.toTypedArray())
+                                    ?: BundleBridge.callStatic(extClass, extMethod, originalResult, *chain.args.toTypedArray())
+                                    ?: BundleBridge.callStatic(extClass, extMethod, originalResult)
                             }.getOrNull()
 
                             val returnType = (executable as? Method)?.returnType
@@ -696,6 +744,9 @@ class DexKitHookDispatcher(
                             argsList.addAll(chain.args)
                             val res = runCatching {
                                 BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                                    ?: if (chain.thisObject != null && chain.args.isNotEmpty()) {
+                                        BundleBridge.callStatic(extClass, extMethod, *chain.args.toTypedArray())
+                                    } else null
                             }.getOrNull()
 
                             val returnType = (executable as? Method)?.returnType
@@ -721,6 +772,9 @@ class DexKitHookDispatcher(
                                 if (chain.thisObject != null) argsList.add(chain.thisObject)
                                 argsList.addAll(chain.args)
                                 BundleBridge.callStatic(extClass, extMethod, *argsList.toTypedArray())
+                                    ?: if (chain.thisObject != null && chain.args.isNotEmpty()) {
+                                        BundleBridge.callStatic(extClass, extMethod, *chain.args.toTypedArray())
+                                    } else null
                             }.onFailure { e ->
                                 Log.w(TAG, "Error in AFTER hook for ${hook.id}: ${e.message}")
                             }
@@ -735,6 +789,30 @@ class DexKitHookDispatcher(
         }.onFailure { e ->
             Log.e(TAG, "Failed to hook $executable for patch ${hook.id}: ${e.message}")
         }
+    }
+
+    private fun isHookEnabled(hook: HookDefinition): Boolean {
+        val candidates = mutableListOf<String>()
+        if (hook.id.isNotEmpty()) {
+            candidates.add("morphe_${hook.id}")
+            candidates.add(hook.id)
+        }
+        if (hook.name.isNotEmpty()) {
+            val kebab = hook.name.lowercase().replace(" ", "-")
+            val snake = hook.name.lowercase().replace(" ", "_")
+            candidates.add("morphe_$kebab")
+            candidates.add("morphe_$snake")
+            candidates.add("morphe_${hook.name}")
+            candidates.add(kebab)
+            candidates.add(snake)
+            candidates.add(hook.name)
+        }
+        for (key in candidates.distinct()) {
+            if (prefs.contains(key)) {
+                return prefs.getBoolean(key, true)
+            }
+        }
+        return true
     }
 
     private fun parseExtensionCall(hook: HookDefinition): Pair<String?, String?> {

@@ -64,32 +64,21 @@ object BundleResourceInjector {
                     Log.w(TAG, "Failed to addLoaders to ${context.javaClass.simpleName}: ${t.message}")
                 }
             }
+        } else {
+            // AssetManager fallback for Android 9 & 10 (API < 30)
+            injectViaAssetManager(pfd, context)
         }
-
-        // Always also inject via AssetManager to guarantee raw assets/ (e.g. JSON animations, skins)
-        // are accessible to AssetManager.open(...) across all Android OEM versions
-        injectViaAssetManager(pfd, context)
     }
 
     private fun registerLifecycleCallbacks(pfd: ParcelFileDescriptor, app: Application) {
         runCatching {
             app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
-                private var handleWebView: Boolean = false
-
                 override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
                     Log.d(TAG, "onActivityCreated: ${activity.javaClass.name}")
-                    if (!handleWebView) {
-                        runCatching {
-                            WebView(activity).destroy()
-                            injectContext(pfd, app)
-                        }
-                        handleWebView = true
-                    }
                     injectContext(pfd, activity)
                 }
 
                 override fun onActivityResumed(activity: Activity) {
-                    Log.d(TAG, "onActivityResumed: ${activity.javaClass.name}")
                     injectContext(pfd, activity)
                 }
 

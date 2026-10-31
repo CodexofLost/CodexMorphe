@@ -73,15 +73,11 @@ class MainHook : XposedModule() {
 
         // 3. Hook Application.onCreate to attach context & inject bundle
         val candidateClasses = mutableListOf<Class<*>>()
-        if (param.applicationInfo.className != null) {
-            runCatching { Class.forName(param.applicationInfo.className, false, param.classLoader) }
+        val appClassName = param.applicationInfo.className
+        if (!appClassName.isNullOrEmpty()) {
+            runCatching { param.classLoader.loadClass(appClassName) }
                 .getOrNull()?.let { candidateClasses.add(it) }
-        }
-        listOf(
-            "com.instagram.app.InstagramAppShell",
-            "com.google.android.apps.youtube.app.YouTubeApplication"
-        ).forEach { knownShell ->
-            runCatching { Class.forName(knownShell, false, param.classLoader) }
+            runCatching { Class.forName(appClassName, false, param.classLoader) }
                 .getOrNull()?.let { candidateClasses.add(it) }
         }
         candidateClasses.add(Application::class.java)

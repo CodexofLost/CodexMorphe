@@ -99,14 +99,14 @@ synced_commit: ba9038d
   * **FIX:** Keep `CodexMorphe` 100% vendor-agnostic. All initializers (`SettingsEntry#onApplicationCreate`, `AddOnApi#initialize`, `Utils#setContext`) and resource fallback targets (`ResourceUtils`) are discovered by `codexmorphe-builder` and passed via `manifest.entrypoints` and `manifest.resourceFallbacks`. The client engine dynamically resolves and invokes them at runtime with zero hardcoded author names.
 * **TRAP:** Unconstrained / wildcard DexKit queries matching entire classes cause fatal ART crashes (e.g. YouTube NPE in `aiat.e()`) and flood logs.
   * **FIX:** Strict query guards in `DexKitHookDispatcher` and discriminator validation in `recipe_builder.py` reject any fingerprint query lacking method name, strings, or literals.
-* **TRAP:** Target app Activities failing to inflate Morphe layouts or custom views with `ResourceNotFoundException`.
-  * **FIX:** Register `Application.ActivityLifecycleCallbacks` (`onActivityCreated`, `onActivityResumed`) in `BundleResourceInjector` to dynamically attach bundle resources to Activity contexts with a `WebView` guard.
+* **TRAP:** Target app Activities failing to inflate Morphe layouts or custom views with `ResourceNotFoundException`, or crashing with `Resources$NotFoundException: Resource ID #0x30c0008` in WebView / Chromium.
+  * **FIX:** Standardize on Android's official `ResourcesLoader` and `ResourcesProvider.loadFromApk` (API 30+) in `BundleResourceInjector` attached across `ActivityLifecycleCallbacks` (`onActivityCreated`, `onActivityResumed`) without obsolete `WebView(activity).destroy()` hacks or concurrent `AssetManager.addAssetPath` calls that corrupt native `AssetManager2` shared library cookies. Preserves `AssetManager.addAssetPath` as a fallback exclusively for API < 30.
 * **TRAP:** Main-thread bytecode scanning via DexKit during `Application.onCreate` blocks app startup for 10–20s and triggers ANRs.
   * **FIX:** `DexKitCacheBridge` caches resolved `Method`/`Constructor` signatures in `SharedPreferences` keyed by target app package and `versionCode` for instant reflection on subsequent boots.
 * **TRAP:** Intercepting Activity lifecycle hooks (`GoogleApiActivity.onCreate`) via `METHOD_REPLACE` without calling `super.onCreate` crashes Android with `SuperNotCalledException`.
   * **FIX:** Always classify lifecycle injection methods as `METHOD_AFTER` in the transpiler and dispatcher so `chain.proceed()` runs first before initializing settings UI.
-* **TRAP:** Target apps (like Instagram) omitting `android:name` in `<application>` manifest cause `param.applicationInfo.className` to be null or generic, missing the real application subclass.
-  * **FIX:** Query multiple candidate application classes (`com.instagram.app.InstagramAppShell`, `com.google.android.apps.youtube.app.YouTubeApplication`, `param.applicationInfo.className`, and `Application`) with an `AtomicBoolean` single-execution guard.
+* **TRAP:** Hardcoding vendor or application shell class names violates engine-bundle decoupling and breaks compatibility across 240+ target applications.
+  * **FIX:** Dynamically resolve manifest-declared application classes via `param.applicationInfo.className` through `param.classLoader` alongside `Application::class.java` with an `AtomicBoolean` single-execution guard.
 * **TRAP:** `RETURN_TRANSFORM` casting an Object or String extension result to a primitive return type (e.g. `Boolean` or `int`), causing ART to throw `java.lang.ClassCastException`.
   * **FIX:** Check `isBoxedTypeOf(returnType, transformed)` before replacing result. If incompatible, log warning and preserve `originalResult`.
 * **TRAP:** Force-updating bundle releases changes SHA-256 checksums, causing stale local cache conflicts.
@@ -123,3 +123,9 @@ synced_commit: ba9038d
   * **FIX:** `DexKitHookDispatcher` prepends `chain.thisObject` to rewrite arguments, verifies type compatibility via `isBoxedTypeOf`, and falls back to `chain.args`.
 * **TRAP:** Remote rolling release `bundle-manifest.json` overwritten by empty delta builds (`apps: {}`), causing client apps to overwrite their local cache and display an empty catalog.
   * **FIX:** `ManifestRepository` enforces strict non-empty application catalog validation (`manifest.applications.isNotEmpty()`) before caching, auto-purges corrupted local caches, and falls back to bundled APK assets (`assets/bundle-manifest.json`), while CI/CD checks `APPS_COUNT > 0` before publishing.
+* **TRAP:** `BEFORE` hooks on lifecycle methods (`onCreate`, `onResume`) skipped completely, and preference key mismatches silently dropping enabled patches.
+  * **FIX:** `DexKitHookDispatcher` checks candidate keys (`morphe_${id}`, `id`, snake_case, kebab-case, raw name) via `isHookEnabled()`. `BEFORE` interceptors always invoke bundle extensions for side-effects, guarantee lifecycle methods are never suppressed, and allow boolean suppressors to early-return.
+* **TRAP:** Child fingerprints (e.g. `ParentFingerprint(ShortsQualityMenuFingerprint.INSTANCE)` constructors) matching tens of thousands of constructors across the entire APK because the parent class was not yet resolved or statically known.
+  * **FIX:** `DexKitHookDispatcher` implements recursive `parentQuery` resolution with class memoization (`resolvedFingerprintClasses`), constraining child queries to `declaredClass = parentClass` and preventing wildcard method searches.
+* **TRAP:** Resource literal fingerprints failing bytecode matching because Dalvik constants use integer resource IDs assigned at app build time.
+  * **FIX:** `DexKitHookDispatcher` queries dynamic Android resource IDs via `context.resources.getIdentifier(fp.resourceName, fp.resourceType, context.packageName)` and matches against `addUsingNumber(resId.toLong())`.

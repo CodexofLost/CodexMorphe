@@ -53,12 +53,12 @@ class PatchPreferenceManager(private val context: Context) {
     }
 
     fun isPatchEnabled(packageName: String, patchKey: String, defaultEnabled: Boolean): Boolean {
-        val prefKey = "morphe_$patchKey"
+        val prefKey = if (patchKey.startsWith("morphe_")) patchKey else "morphe_$patchKey"
         return localPrefs.getBoolean("${packageName}_$prefKey", defaultEnabled)
     }
 
     fun setPatchEnabled(packageName: String, patchKey: String, enabled: Boolean) {
-        val prefKey = "morphe_$patchKey"
+        val prefKey = if (patchKey.startsWith("morphe_")) patchKey else "morphe_$patchKey"
         localPrefs.edit().putBoolean("${packageName}_$prefKey", enabled).apply()
         syncToRemote(packageName) { edit().putBoolean(prefKey, enabled).apply() }
     }
@@ -68,7 +68,7 @@ class PatchPreferenceManager(private val context: Context) {
         val filtered = patches.filterNot { isExcludedPatch(it.key, it.name) }
 
         filtered.forEach { patch ->
-            val prefKey = "morphe_${patch.key}"
+            val prefKey = if (patch.key.startsWith("morphe_")) patch.key else "morphe_${patch.key}"
             localEditor.putBoolean("${packageName}_$prefKey", enabled)
         }
         localEditor.apply()
@@ -76,7 +76,8 @@ class PatchPreferenceManager(private val context: Context) {
         syncToRemote(packageName) {
             val remoteEditor = edit()
             filtered.forEach { patch ->
-                remoteEditor.putBoolean("morphe_${patch.key}", enabled)
+                val prefKey = if (patch.key.startsWith("morphe_")) patch.key else "morphe_${patch.key}"
+                remoteEditor.putBoolean(prefKey, enabled)
             }
             remoteEditor.apply()
         }
@@ -87,7 +88,7 @@ class PatchPreferenceManager(private val context: Context) {
         val filtered = patches.filterNot { isExcludedPatch(it.key, it.name) }
 
         filtered.forEach { patch ->
-            val prefKey = "morphe_${patch.key}"
+            val prefKey = if (patch.key.startsWith("morphe_")) patch.key else "morphe_${patch.key}"
             localEditor.putBoolean("${packageName}_$prefKey", patch.defaultEnabled)
         }
         localEditor.apply()
@@ -95,7 +96,8 @@ class PatchPreferenceManager(private val context: Context) {
         syncToRemote(packageName) {
             val remoteEditor = edit()
             filtered.forEach { patch ->
-                remoteEditor.putBoolean("morphe_${patch.key}", patch.defaultEnabled)
+                val prefKey = if (patch.key.startsWith("morphe_")) patch.key else "morphe_${patch.key}"
+                remoteEditor.putBoolean(prefKey, patch.defaultEnabled)
             }
             remoteEditor.apply()
         }

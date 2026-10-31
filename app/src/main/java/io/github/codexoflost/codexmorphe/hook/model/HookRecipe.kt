@@ -63,5 +63,15 @@ data class FingerprintQuery(
     @SerializedName("opcodes")
     val opcodes: List<String> = emptyList(),
     @SerializedName("literal")
-    val literal: Long? = null
+    val literal: Long? = null,
+    @SerializedName("resource_name")
+    val resourceName: String? = null,
+    @SerializedName("resource_type")
+    val resourceType: String? = null,
+    @SerializedName("parent_fingerprint")
+    val parentFingerprint: String? = null,
+    @SerializedName("fingerprint_class")
+    val fingerprintClass: String? = null,
+    @SerializedName("parent_query")
+    val parentQuery: FingerprintQuery? = null
 )
