@@ -66,8 +66,10 @@ Resolve remaining runtime failures (YouTube `akrh.e()` NPE) and inert feature st
   - [x] Narrow `is_extension_package` to `.extension.` packages.
   - [x] Fix NameAndType tuple index unpacking (`nat[1][0]`, `nat[1][1]`).
   - [x] Add `0x12` / `0x13` (`ldc` / `ldc_w`) Smali instruction scanning in `ClassfileAst`.
+  - [x] Transition regex-based parsing to structured AST across XML DOM, Dalvik DEX class defs, JVM Constant Pool AST (Class, Utf8, String), and identifier AST rules (`part.isidentifier()`).
   - [x] Reject hooks with empty method names or non-extension targets.
   - [x] Enforce that constructor `<init>` hooks are strictly `AFTER`.
+  - [x] Dynamically discover all app tags in archive without hardcoding.
 - [x] Run test suite (`python3 -m unittest discover tests -v`) -> 16/16 passed cleanly.
 
 ### Phase 2: Commit, Push, and Rolling Release Gate
