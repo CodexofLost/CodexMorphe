@@ -391,15 +391,16 @@ class DexKitHookDispatcher(
         val hasValidMethodName = !fp.methodName.isNullOrEmpty()
         val hasStrings = fp.strings.isNotEmpty()
         val hasLiteral = fp.literal != null
+        val hasConcreteParam = fp.paramTypes.any { it != "L" && it.length > 5 && !it.startsWith("java.") && !it.startsWith("android.") }
 
-        // Strict invariant: Reject any unconstrained query that lacks a method name, strings, and literal.
-        if (!hasValidMethodName && !hasStrings && !hasLiteral) {
-            Log.w(TAG, "Rejecting unconstrained query lacking method_name, strings, and literal: ${hook.id}")
+        // Strict invariant: Reject any unconstrained query that lacks a method name, strings, literal, and concrete params.
+        if (!hasValidMethodName && !hasStrings && !hasLiteral && !hasConcreteParam) {
+            Log.w(TAG, "Rejecting unconstrained query lacking method_name, strings, literal, and concrete params: ${hook.id}")
             return emptyList()
         }
 
-        // Strict guard: If declaringClass is set, but methodName, strings, and literal are all missing: REJECT!
-        if (fp.methodName.isNullOrEmpty() && fp.strings.isEmpty() && fp.literal == null) {
+        // Strict guard: If declaringClass is set, but methodName, strings, literal, and concrete param are all missing: REJECT!
+        if (fp.methodName.isNullOrEmpty() && fp.strings.isEmpty() && fp.literal == null && !hasConcreteParam) {
             Log.w(TAG, "Rejecting wildcard query matching entire class: ${hook.id} (${fp.declaringClass})")
             return emptyList()
         }
@@ -428,14 +429,32 @@ class DexKitHookDispatcher(
                     if (fp.strings.isNotEmpty()) {
                         usingStrings(fp.strings)
                     }
-                    if (fp.literal != null) {
+                    if (fp.literal != null && fp.strings.isEmpty()) {
                         addUsingNumber(fp.literal)
                     }
                 }
             }
         }.getOrDefault(emptyList())
 
-        if (results.isEmpty() && hasClassDiscriminator && fp.strings.size > 1) {
+        val filteredResults = if (fp.paramTypes.isNotEmpty() && fp.paramTypes.any { it == "L" }) {
+            results.filter { methodData ->
+                if (methodData.paramTypeNames.size != fp.paramTypes.size) return@filter false
+                for (i in fp.paramTypes.indices) {
+                    val expected = fp.paramTypes[i]
+                    if (expected != "L") {
+                        val cleanedExpected = cleanType(expected)
+                        val actual = methodData.paramTypeNames.getOrNull(i)
+                        if (actual != cleanedExpected) return@filter false
+                    }
+                }
+                true
+            }
+        } else {
+            results
+        }
+
+        var finalResults = filteredResults
+        if (finalResults.isEmpty() && fp.strings.size > 1) {
             for (str in fp.strings) {
                 if (str.length < 5) continue
                 val fallbackResults = runCatching {
@@ -460,27 +479,48 @@ class DexKitHookDispatcher(
                                 paramCount(fp.paramCount)
                             }
                             usingStrings(listOf(str))
-                            if (fp.literal != null) {
+                            if (fp.literal != null && fp.strings.isEmpty()) {
                                 addUsingNumber(fp.literal)
                             }
                         }
                     }
                 }.getOrDefault(emptyList())
-                if (fallbackResults.isNotEmpty()) return fallbackResults
+
+                val filteredFallback = if (fp.paramTypes.isNotEmpty() && fp.paramTypes.any { it == "L" }) {
+                    fallbackResults.filter { methodData ->
+                        if (methodData.paramTypeNames.size != fp.paramTypes.size) return@filter false
+                        for (i in fp.paramTypes.indices) {
+                            val expected = fp.paramTypes[i]
+                            if (expected != "L") {
+                                val cleanedExpected = cleanType(expected)
+                                val actual = methodData.paramTypeNames.getOrNull(i)
+                                if (actual != cleanedExpected) return@filter false
+                            }
+                        }
+                        true
+                    }
+                } else {
+                    fallbackResults
+                }
+
+                if (filteredFallback.size == 1 || (hasClassDiscriminator && filteredFallback.isNotEmpty())) {
+                    finalResults = filteredFallback
+                    break
+                }
             }
         }
 
-        if (results.size > 1 && !hasClassDiscriminator && fp.strings.isEmpty()) {
-            Log.w(TAG, "Rejecting query that matched multiple methods (${results.size}) across classes without declaringClass or strings: ${hook.id} (method=${fp.methodName})")
+        if (finalResults.size > 1 && !hasClassDiscriminator && fp.strings.isEmpty()) {
+            Log.w(TAG, "Rejecting query that matched multiple methods (${finalResults.size}) across classes without declaringClass or strings: ${hook.id} (method=${fp.methodName})")
             return emptyList()
         }
 
-        if (results.size > 5 && !hasClassDiscriminator) {
-            Log.w(TAG, "Rejecting query that matched too many methods (${results.size}) without declaringClass: ${hook.id}")
+        if (finalResults.size > 5 && !hasClassDiscriminator) {
+            Log.w(TAG, "Rejecting query that matched too many methods (${finalResults.size}) without declaringClass: ${hook.id}")
             return emptyList()
         }
 
-        return results
+        return finalResults
     }
 
     private fun cleanType(t: String?): String {
