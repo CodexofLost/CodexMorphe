@@ -710,6 +710,7 @@ class DexKitHookDispatcher(
         if (parts.size != 2) return Pair(null, null)
         val cls = parts[0].trim().removePrefix("L").removeSuffix(";").replace("/", ".")
         val method = parts[1].split("(")[0].trim()
+        if (cls.isEmpty() || method.isEmpty()) return Pair(null, null)
         return Pair(cls, method)
     }
 }

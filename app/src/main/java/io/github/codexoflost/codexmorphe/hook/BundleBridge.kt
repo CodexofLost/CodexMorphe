@@ -196,25 +196,34 @@ object BundleBridge {
         targets.addAll(resourceFallbacks)
         for (pkg in candidatePackages) {
             targets.add("$pkg.ResourceUtils")
+            targets.add("$pkg.ResourceUtilsKt")
             if (pkg.contains(".extension.")) {
                 val sharedPkg = pkg.substringBefore(".extension.") + ".extension.shared"
                 targets.add("$sharedPkg.ResourceUtils")
+                targets.add("$sharedPkg.ResourceUtilsKt")
             }
         }
 
         for (target in targets) {
             val clazz = loadClass(target) ?: continue
             runCatching {
+                val instanceField = runCatching { clazz.getDeclaredField("INSTANCE") }.getOrNull()
+                val instance = instanceField?.let {
+                    it.isAccessible = true
+                    it.get(null)
+                }
                 val setter = runCatching { clazz.getDeclaredMethod("setFallbackPackageName", String::class.java) }.getOrNull()
                 if (setter != null) {
                     setter.isAccessible = true
-                    setter.invoke(null, context.packageName)
+                    setter.invoke(instance, context.packageName)
                     Log.i(TAG, "Initialized $target.fallbackPackageName via setter to ${context.packageName}")
                 } else {
-                    val field = clazz.getDeclaredField("fallbackPackageName")
-                    field.isAccessible = true
-                    field.set(null, context.packageName)
-                    Log.i(TAG, "Initialized $target.fallbackPackageName via field to ${context.packageName}")
+                    val field = runCatching { clazz.getDeclaredField("fallbackPackageName") }.getOrNull()
+                    if (field != null) {
+                        field.isAccessible = true
+                        field.set(instance, context.packageName)
+                        Log.i(TAG, "Initialized $target.fallbackPackageName via field to ${context.packageName}")
+                    }
                 }
             }.onFailure {
                 Log.w(TAG, "Could not set fallbackPackageName on $target: ${it.message}")
